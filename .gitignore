@@ -4,7 +4,7 @@ __pycache__/
 
 # runtime data — never commit real receipts or the database
 receipts.db
-receipts.db.bak
+receipts.db.bak*
 pending_scans/
 processed_archive/
 duplicate_scans/

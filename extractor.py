@@ -33,15 +33,31 @@ os.makedirs(NEEDS_REVIEW_DIR, exist_ok=True)
 
 RIA_EXTRACTION_PROMPT = (
     "You are an OCR and data extraction tool. Look at the provided Ria receipt.\n"
+    "This may be a normal Order receipt, an Order receipt marked VOID (look for the word\n"
+    "'VOID' handwritten or stamped across the middle of the page, and/or handwritten over\n"
+    "the signature lines near the bottom), or a separate Refund receipt (look for the words\n"
+    "'Refund Date' and 'Total Refunded' in place of 'Order Date' and 'Total').\n"
     "Do NOT use placeholder names like John Doe. Read the actual image.\n"
+    "Ria receipts have THREE different ID numbers -- do not confuse them:\n"
+    "  - 'Seq No' / 'No. Sec.': a short internal sequence number. Only normal/VOID receipts\n"
+    "    have this -- a Refund receipt never shows a Seq No.\n"
+    "  - 'Order No' / 'No. Orden' (on normal/VOID receipts) or 'Transaction No' / 'No.\n"
+    "    Transaccion' (on Refund receipts): a longer, usually 'US'-prefixed transaction\n"
+    "    identifier. These are the SAME identifier space under two different labels --\n"
+    "    this is what links a Refund receipt back to the original transaction.\n"
+    "  - 'Customer No' / 'No. Cliente': identifies the sender's account, NOT the transaction.\n"
+    "    Never use this for sequence_number or order_number.\n"
     "Output a strict JSON object with exactly these keys:\n"
     "{\n"
-    "  \"raw_transcription\": \"(Step 1: Type the literal text you see for the Order Date, Seq No, Sender, Total, and Recipient here first)\",\n"
-    "  \"date\": \"(Step 2: Extract the date from your transcription, formatted as MM/DD/YYYY)\",\n"
-    "  \"sequence_number\": \"(Step 2: Extract the Seq No digits)\",\n"
+    "  \"raw_transcription\": \"(Step 1: Type the literal text you see for the Order/Refund Date, Seq No, Order No/Transaction No, Sender, Total, Recipient, and any VOID marks here first)\",\n"
+    "  \"date\": \"(Step 2: Extract the Order Date, or the Refund Date on a Refund receipt, formatted as MM/DD/YYYY)\",\n"
+    "  \"sequence_number\": \"(Step 2: On a normal or VOID receipt, extract only the digits after 'Seq No', e.g. '69447' -- this field IS present on those two receipt types. On a Refund receipt only, there is no Seq No field at all, so leave this as an empty string)\",\n"
+    "  \"order_number\": \"(Step 2: Extract only the digits after 'Order No' on a normal/VOID receipt, or after 'Transaction No' on a Refund receipt -- never the Customer No)\",\n"
     "  \"sender_name\": \"(Step 2: Extract the SENDER full name)\",\n"
-    "  \"amount\": \"(Step 2: Extract the Total USD numeric value)\",\n"
-    "  \"recipient_name\": \"(Step 2: Extract the RECIPIENT full name)\"\n"
+    "  \"amount\": \"(Step 2: Extract the Total USD numeric value, or the Total Refunded value on a Refund receipt)\",\n"
+    "  \"recipient_name\": \"(Step 2: Extract the RECIPIENT full name)\",\n"
+    "  \"is_cancellation\": \"(Step 2: true if the word VOID appears anywhere on the receipt, OR this is a separate Refund receipt; otherwise false)\",\n"
+    "  \"cancellation_type\": \"(Step 2: 'void' if VOID appears on the receipt, 'refund' if this is a Refund receipt, otherwise null)\"\n"
     "}"
 )
 
@@ -54,8 +70,10 @@ MAXI_EXTRACTION_PROMPT = (
     "{\n"
     "  \"raw_transcription\": \"(Step 1: Type the literal text you see for the date, Receipt/Folio # or Canceled Invoice #, Sender/Remitente, the USD total, and Recipient/Beneficiario here first)\",\n"
     "  \"is_cancellation\": \"(Step 2: true if this is a Cancellation Receipt, otherwise false)\",\n"
+    "  \"cancellation_type\": \"(Step 2: 'refund' if this is a Cancellation Receipt, otherwise null)\",\n"
     "  \"date\": \"(Step 2: Extract the receipt date, formatted as MM/DD/YYYY)\",\n"
-    "  \"sequence_number\": \"(Step 2: On a normal receipt, extract the number after 'Receipt/Folio #'. On a Cancellation Receipt, extract the number after 'Canceled Invoice #' instead -- this links the cancellation back to the original transaction)\",\n"
+    "  \"sequence_number\": \"(Step 2: On a normal receipt, extract the number after 'Receipt/Folio #'. On a Cancellation Receipt, extract the number after 'Canceled Invoice #' instead)\",\n"
+    "  \"references_sequence_number\": \"(Step 2: On a Cancellation Receipt, the same Canceled Invoice # value -- this links the cancellation back to the original transaction. On a normal receipt, null)\",\n"
     "  \"sender_name\": \"(Step 2: Extract the full name that follows 'Sender/Remitente')\",\n"
     "  \"amount\": \"(Step 2: On a normal receipt, extract the numeric value next to 'TOTAL/TOTAL' -- the USD total charged to the sender. On a Cancellation Receipt, extract the numeric value next to 'Total Amount Refunded' instead)\",\n"
     "  \"recipient_name\": \"(Step 2: Extract the full name that follows 'Recipient/Beneficiario')\"\n"
@@ -120,6 +138,18 @@ def normalize_date_string(raw_date):
         except ValueError:
             continue
     raise ValueError(f"Unrecognized date format: '{raw_date}'")
+
+
+def normalize_cancellation_type(raw_value):
+    """
+    Collapses whatever the model returns for cancellation_type down to the
+    two values the pipeline understands ("void", "refund"), or None. Guards
+    against the model inventing a label or echoing the field description.
+    """
+    value = str(raw_value or "").strip().lower()
+    if value in ("void", "refund"):
+        return value
+    return None
 
 
 def parse_amount(raw_amount):
@@ -202,28 +232,44 @@ def process_image_batch_queue(receipt_type="ria"):
             amount = parse_amount(clean_data.get('amount'))
             date_string = normalize_date_string(clean_data.get('date', ''))
             is_cancellation = str(clean_data.get('is_cancellation', False)).strip().lower() in ('true', '1', 'yes')
+            cancellation_type = normalize_cancellation_type(clean_data.get('cancellation_type'))
+            references_seq = str(clean_data.get('references_sequence_number') or '').strip() or None
+            order_num = str(clean_data.get('order_number') or '').strip() or None
         except Exception as e:
             print(f"   ❌ Field validation failed for {filename}: {e}")
             shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))
             continue
 
         # --- Stage 3: cancellation linking, or duplicate protection ---
-        if is_cancellation and seq_num:
-            # A cancellation receipt references an existing invoice number rather
-            # than being a new transaction -- link it to that record instead of
-            # rejecting it as a duplicate or inserting a confusing second row.
+        # Maxi cancellations link back to an original transaction via
+        # references_sequence_number, matched against sequence_number. Ria refunds
+        # link back via order_number instead -- Order No/Transaction No is the
+        # identifier space shared across Ria's normal, void, and refund documents,
+        # while Seq No never appears on a Refund receipt so it can't serve as a
+        # link. A Ria void has nothing to link to -- it IS the original receipt,
+        # just voided -- so it falls through to the normal duplicate-check/insert
+        # path below with is_canceled already set to True.
+        lookup_field = lookup_value = None
+        if is_cancellation and cancellation_type == 'refund':
+            if receipt_type == 'maxi' and references_seq:
+                lookup_field, lookup_value = Deposit.sequence_number, references_seq
+            elif receipt_type == 'ria' and order_num:
+                lookup_field, lookup_value = Deposit.order_number, order_num
+
+        if lookup_value:
             original = db_session.query(Deposit).filter(
-                Deposit.sequence_number == seq_num,
+                lookup_field == lookup_value,
                 Deposit.is_canceled == False
             ).first()
             if original:
                 original.is_canceled = True
+                original.cancellation_type = cancellation_type
                 db_session.commit()
                 try:
                     shutil.move(file_path, os.path.join(ARCHIVE_DIR, filename))
-                    print(f"   🛑 Marked original transaction (Ref: {seq_num}) as CANCELED based on {filename}")
+                    print(f"   🛑 Marked original transaction (Ref: {lookup_value}) as CANCELED based on {filename}")
                 except Exception as e:
-                    print(f"   ⚠️  Marked original transaction (Ref: {seq_num}) as CANCELED, but failed to archive {filename}: {e}")
+                    print(f"   ⚠️  Marked original transaction (Ref: {lookup_value}) as CANCELED, but failed to archive {filename}: {e}")
                 continue
             # No matching original on file yet -- fall through and insert this
             # cancellation as its own standalone canceled record below.
@@ -245,17 +291,21 @@ def process_image_batch_queue(receipt_type="ria"):
             new_deposit = Deposit(
                 date_string=date_string,
                 sequence_number=seq_num,
+                order_number=order_num,
                 sender_name=sender_name,
                 amount=amount,
                 recipient_name=recipient_name,
                 receipt_type=receipt_type,
                 image_filename=filename,
                 is_flagged=False,
-                is_canceled=is_cancellation
+                is_canceled=is_cancellation,
+                cancellation_type=cancellation_type,
+                references_sequence_number=references_seq
             )
             db_session.add(new_deposit)
             db_session.commit()
-            print(f"   ✅ Successfully Logged [{receipt_type}]: '{new_deposit.sender_name}' -> '{new_deposit.recipient_name}' | Ref: {new_deposit.sequence_number} | ${new_deposit.amount:,.2f}")
+            status_tag = f" [{cancellation_type.upper()}]" if cancellation_type else ""
+            print(f"   ✅ Successfully Logged [{receipt_type}]{status_tag}: '{new_deposit.sender_name}' -> '{new_deposit.recipient_name}' | Ref: {new_deposit.sequence_number} | ${new_deposit.amount:,.2f}")
         except Exception as e:
             db_session.rollback()
             print(f"   ❌ Critical error saving {filename} to database: {e}")

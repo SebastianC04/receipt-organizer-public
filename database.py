@@ -19,13 +19,16 @@ class Deposit(Base):
     id = Column(Integer, primary_key=True, index=True)
     date_string = Column(String, nullable=False)        # 1. Date (stored normalized as YYYY-MM-DD)
     sequence_number = Column(String, nullable=True, index=True)  # 2. Sequence Number / Receipt-Folio #
+    order_number = Column(String, nullable=True, index=True)  # Ria Order No / Transaction No -- the only ID shared between a Ria refund and the original it refers to (Seq No never appears on a Refund receipt)
     sender_name = Column(String, nullable=False, index=True) # 3. Sender Name
     amount = Column(Float, nullable=False)              # 4. Total USD
     recipient_name = Column(String, nullable=True)     # 5. Recipient Name
     receipt_type = Column(String, nullable=False, default="ria")  # "ria" or "maxi"
     image_filename = Column(String, nullable=True)     # Archived scan filename, for drill-down/image viewing
     is_flagged = Column(Boolean, default=False)
-    is_canceled = Column(Boolean, default=False)  # Set when a Maxi Cancellation Receipt references this transaction
+    is_canceled = Column(Boolean, default=False)  # Set when a cancellation/refund/void references or is this transaction
+    cancellation_type = Column(String, nullable=True)  # "void", "refund", or None
+    references_sequence_number = Column(String, nullable=True)  # Original transaction this record's cancellation points to, if any
     created_at = Column(DateTime, default=datetime.utcnow)
 
 # 4. Helper function to initialize the physical database file safely
