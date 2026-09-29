@@ -31,6 +31,17 @@ os.makedirs(ARCHIVE_DIR, exist_ok=True)
 os.makedirs(DUPLICATE_DIR, exist_ok=True)
 os.makedirs(NEEDS_REVIEW_DIR, exist_ok=True)
 
+# Known limitation (found via the receipt-evaluation harness's real-scan labeled
+# set, ~1/31 receipts): when a recipient's street/colonia line is itself a
+# name-like Mexican place name (e.g. "Pino Suarez", "Ricardo Flores Magon"),
+# the model sometimes merges it into recipient_name instead of stopping at the
+# first line. Tried two prompt fixes (semantic "don't include address lines",
+# and positional "only the first line, full stop") -- neither overrode the
+# model's prior on this specific pattern, so this isn't a prompt-clarity
+# problem. A real fix belongs here in production, not in the eval prompt:
+# e.g. flag a multi-word recipient_name for needs_review instead of trusting
+# it silently, or cross-check against a real Mexican street/colonia gazetteer.
+# Not pursued further since it's a rare edge case with no free fix available.
 RIA_EXTRACTION_PROMPT = (
     "You are an OCR and data extraction tool. Look at the provided Ria receipt.\n"
     "This may be a normal Order receipt, an Order receipt marked VOID (look for the word\n"
