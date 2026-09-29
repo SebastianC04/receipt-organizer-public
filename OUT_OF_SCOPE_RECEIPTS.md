@@ -52,9 +52,8 @@ Cost: one extra vision call per file, about 3.7s each with `qwen2.5vl:7b`
 
 ### Out-of-scope files found in `processed_archive/`
 
-These were archived and logged before the classifier existed, so their
-(likely hallucinated) rows may be in the `Deposit` table. They have **not**
-been moved or deleted.
+These were archived and logged before the classifier existed, with
+hallucinated `Deposit` rows. They have since been cleaned up (see below).
 
 `bill_payment` (19), all in `processed_archive/`:
 `09-01-2026-` + `11-47-51`, `11-48-01`, `12-02-50`, `12-03-37`,
@@ -67,9 +66,9 @@ been moved or deleted.
 
 ## Remaining / not done
 
-- Clean-up of the 19 archived bill payments (and any `Deposit` rows created
-  from them) is not done; decide whether to delete the rows and move the
-  files to `needs_review/`.
+- (Done 2026-09-29) The 19 archived bill payments were moved to
+  `needs_review/` and their 19 `Deposit` rows deleted (backup:
+  `snapshots/receipts.db.pre-billcleanup`).
 - The classifier is only validated on Ria and Maxi transfers vs. the two
   known out-of-scope types. A new document type would likely land in
   `other` (-> `needs_review/`), but that's untested.
