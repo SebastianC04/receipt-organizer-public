@@ -45,18 +45,27 @@ os.makedirs(NEEDS_REVIEW_DIR, exist_ok=True)
 #    overrode the model's prior on this pattern, so it isn't a
 #    prompt-clarity problem.
 #
-# 2. amount sometimes picks "Total to Recipient" instead of "Total" on
-#    domestic (USD-to-USD, exchange rate 1.00) transfers. Normally these two
-#    fields are unambiguous because "Total to Recipient" is in a different
-#    currency (MXN) -- but for a domestic transfer both are in USD, and nothing
-#    else on the receipt distinguishes them. Confirmed against raw scans (the
-#    receipt's actual "Total" line matched ground truth; the model's answer
-#    was the other field, not a misread of either number).
+# 2. amount sometimes picks the wrong figure on domestic (USD-to-USD,
+#    exchange rate 1.00) transfers, where the fields that are normally
+#    distinguishable by currency are all in USD. In the 3 confirmed cases
+#    (of 246) the model returned the pre-fee Transfer Amount instead of the
+#    Total. Confirmed against raw scans (the receipt's actual "Total" line
+#    matched ground truth).
 #
-# Neither has a free prompt fix. Real fixes belong here in production, not in
-# the eval prompt: flag a multi-word recipient_name, or an amount that doesn't
-# reconcile with Transfer Amount + Fees + Taxes, for needs_review instead of
-# trusting either silently.
+# Neither has a free prompt fix, so both are caught in code after extraction
+# and routed to needs_review instead of trusting them silently:
+#   - find_amount_problem(): the model's raw_transcription already contains
+#     Transfer Amount / Fees / Taxes / Total, so reconcile them and compare
+#     the total against `amount`. Against the 247-receipt labeled run: caught
+#     3/3 bad amounts, 0/243 false positives; parses on 179/182 Ria receipts
+#     (the rest are skipped, not flagged).
+#   - find_recipient_name_problem(): flags an absorbed country name / address
+#     marker, 7+ words, or a garbled character. Caught 7/16 bad names, 0/230
+#     false positives.
+# Still NOT detectable from model output alone (9/16 bad names in that run):
+# absorbed street lines with no marker word ("Pino Suarez"), and one- or
+# two-letter spelling slips ("Janet" vs "Jannet"). The model's own
+# raw_transcription repeats its spelling, so cross-checking it finds nothing.
 RIA_EXTRACTION_PROMPT = (
     "You are an OCR and data extraction tool. Look at the provided Ria receipt.\n"
     "This may be a normal Order receipt, an Order receipt marked VOID (look for the word\n"
@@ -129,6 +138,55 @@ MAXI_EXTRACTION_PROMPT = (
     "  \"recipient_name\": \"(Step 2: Extract the full name that follows 'Recipient/Beneficiario')\"\n"
     "}"
 )
+
+
+_MONEY = r"([\d,]+\.\d{2})"
+_COUNTRY_TAILS = ("mexico", "guatemala", "honduras", "nicaragua", "panama", "el salvador", "gt", "mx")
+_ADDRESS_MARKERS = re.compile(r"\b(sin nombre|s/n|calle|colonia|col\.?|c/)(?=\s|$)", re.I)
+
+
+def _find_money(label, text):
+    m = re.search(label + r"\s*(?:\([^)]*\))?\s*" + _MONEY, text, re.I)
+    return float(m.group(1).replace(",", "")) if m else None
+
+
+def find_amount_problem(raw_transcription, amount, tolerance=0.02):
+    """
+    Reconciles the Ria receipt figures the model transcribed (Transfer Amount
+    + Fees + Taxes = Total) and checks the extracted `amount` against that
+    Total. Returns a description of the problem, or None if it reconciles or
+    the transcription doesn't contain all four figures (e.g. refund receipts).
+    """
+    text = raw_transcription or ""
+    transfer, fees, taxes, total = (_find_money("Transfer Amount", text), _find_money("Transfer Fees", text),
+                                    _find_money("Transfer Taxes", text), _find_money("Total", text))
+    if None in (transfer, fees, taxes, total):
+        return None
+    if abs(transfer + fees + taxes - total) > tolerance:
+        return f"transcribed figures don't reconcile ({transfer} + {fees} + {taxes} != {total})"
+    if abs(amount - total) > tolerance:
+        return f"amount {amount} doesn't match the receipt Total {total}"
+    return None
+
+
+def find_recipient_name_problem(name):
+    """
+    Flags a recipient_name that looks like it absorbed the next line (country
+    name, address marker, or an implausibly long name) or contains a garbled
+    character. Returns a description of the problem, or None.
+    """
+    name = re.sub(r"\s+", " ", name or "").strip()
+    low = name.lower()
+    if "�" in name:
+        return "contains a garbled character"
+    if len(low.split()) >= 7:
+        return f"{len(low.split())} words is too long for a name"
+    for tail in _COUNTRY_TAILS:
+        if low == tail or low.endswith(" " + tail):
+            return f"ends with '{tail}'"
+    if _ADDRESS_MARKERS.search(low):
+        return "contains an address marker"
+    return None
 
 
 CLASSIFY_PROMPT = (
@@ -354,6 +412,15 @@ def process_image_batch_queue(receipt_type="ria"):
             order_num = normalize_order_number(clean_data.get('order_number'))
         except Exception as e:
             print(f"   ❌ Field validation failed for {filename}: {e}")
+            shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))
+            continue
+
+        # --- Stage 2b: sanity checks on values the model is known to get wrong ---
+        problem = find_recipient_name_problem(recipient_name)
+        if not problem and receipt_type == 'ria':
+            problem = find_amount_problem(clean_data.get('raw_transcription', ''), amount)
+        if problem:
+            print(f"   ⚠️  Suspicious extraction for {filename}: {problem} -- moving to {NEEDS_REVIEW_DIR}")
             shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))
             continue
 

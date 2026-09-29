@@ -69,8 +69,52 @@ hallucinated `Deposit` rows. They have since been cleaned up (see below).
 - (Done 2026-09-29) The 19 archived bill payments were moved to
   `needs_review/` and their 19 `Deposit` rows deleted (backup:
   `snapshots/receipts.db.pre-billcleanup`).
-- The classifier is only validated on Ria and Maxi transfers vs. the two
-  known out-of-scope types. A new document type would likely land in
-  `other` (-> `needs_review/`), but that's untested.
 - Ria vs. Maxi is still chosen per batch via `receipt_type`; only
   non-transfer documents are auto-detected.
+- A money-transfer receipt from a *different* company (tested with a
+  Western Union-style receipt) is classified `money_transfer` and goes
+  through Ria/Maxi extraction, since the classifier asks "is this a transfer
+  receipt", not "is this Ria/Maxi". Nothing catches this yet.
+- The extraction checks below can't detect 9 of the 16 wrong recipient names
+  in the labeled run (street lines with no marker word, and spelling slips).
+
+## Unseen document types (tested 2026-09-29)
+
+Synthetic documents the classifier had never seen, plus the labeled set's
+cancellations:
+
+| Document | Result |
+|---|---|
+| blank page, bank deposit slip, random noise | `other` |
+| grocery receipt, plumbing invoice | `bill_payment` (wrong label, still routed to `needs_review/`) |
+| Western Union-style transfer | `money_transfer` (see above) |
+| void and refund Ria receipts in the labeled set (1 void, 2 refunds) | `money_transfer` (3/3) |
+
+The cancellation sample is small, and the labeled set has no Maxi
+cancellation. The synthetic documents are simple renderings, not real scans.
+
+## Post-extraction checks (added 2026-09-29)
+
+Two known extraction errors (documented in the `extractor.py` comments) are
+now caught in code, in Stage 2b of `process_image_batch_queue()`, and the
+file is moved to `needs_review/` instead of being stored:
+
+- `find_amount_problem()` (Ria only): reconciles the Transfer Amount, Fees
+  and Taxes the model wrote in `raw_transcription`, and compares the Total
+  with the extracted `amount`. The bad amounts were the pre-fee Transfer
+  Amount, not "Total to Recipient" as the old comment said.
+- `find_recipient_name_problem()`: flags a recipient name ending in a country
+  name, containing an address marker, 7+ words long, or containing a garbled
+  character.
+
+Checked against the 247-receipt labeled run (`receipt-evaluation`, commit
+`90ecd73`):
+
+| Check | Caught | False positives |
+|---|---|---|
+| amount | 3/3 | 0/243 |
+| recipient name | 7/16 | 0/230 |
+
+The amount check parses on 179 of 182 Ria receipts; the other 3 are skipped,
+not flagged. This was measured on saved model output, not by re-running the
+model, so the live pipeline hasn't been re-run with these checks.
