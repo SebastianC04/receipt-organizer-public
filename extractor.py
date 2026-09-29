@@ -152,6 +152,21 @@ def normalize_cancellation_type(raw_value):
     return None
 
 
+def normalize_order_number(raw_value):
+    """
+    Strips to digits-only. The model is inconsistent about whether it keeps
+    the 'US' country-code prefix on Order No/Transaction No -- observed on
+    real scans keeping it on some receipts and dropping it on others. Since
+    order_number is exactly the field a Ria refund is matched back to its
+    original transaction by (see Stage 3 linking below), an inconsistent
+    prefix would make that match silently fail. Normalizing to digits-only
+    makes the comparison prefix-agnostic instead of relying on the model to
+    be consistent about cosmetic formatting.
+    """
+    digits = re.sub(r'[^0-9]', '', str(raw_value or ''))
+    return digits or None
+
+
 def parse_amount(raw_amount):
     """
     Strips currency symbols/commas/stray text before converting to float.
@@ -234,7 +249,7 @@ def process_image_batch_queue(receipt_type="ria"):
             is_cancellation = str(clean_data.get('is_cancellation', False)).strip().lower() in ('true', '1', 'yes')
             cancellation_type = normalize_cancellation_type(clean_data.get('cancellation_type'))
             references_seq = str(clean_data.get('references_sequence_number') or '').strip() or None
-            order_num = str(clean_data.get('order_number') or '').strip() or None
+            order_num = normalize_order_number(clean_data.get('order_number'))
         except Exception as e:
             print(f"   ❌ Field validation failed for {filename}: {e}")
             shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))
