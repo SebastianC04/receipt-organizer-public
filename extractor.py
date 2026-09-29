@@ -203,6 +203,7 @@ CLASSIFY_PROMPT = (
     "Respond with JSON only: {\"document_type\": \"<label>\"}"
 )
 
+CLASSIFY_IMAGE_PX = 512
 CLASSIFY_LABELS = ("money_transfer", "phone_recharge", "bill_payment", "other")
 
 
@@ -255,7 +256,7 @@ def load_source_image(file_path):
     return Image.open(file_path)
 
 
-def prepare_image_payload(file_path):
+def prepare_image_payload(file_path, max_px=1024):
     """
     Downscale + re-encode before sending to the vision model.
 
@@ -268,7 +269,7 @@ def prepare_image_payload(file_path):
     img = load_source_image(file_path)
     if img.mode != 'RGB':
         img = img.convert('RGB')
-    img.thumbnail((1024, 1024))
+    img.thumbnail((max_px, max_px))
     buffered = io.BytesIO()
     img.save(buffered, format="JPEG", quality=85)
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
@@ -359,7 +360,12 @@ def process_image_batch_queue(receipt_type="ria"):
             # Pre-classification: bills/recharges share Ria/Maxi branding but
             # have no transfer fields, and the extraction prompt would make
             # the model invent them. Route anything else to needs_review.
-            document_type = classify_document(encoded_string)
+            # The classifier gets a smaller copy of the image on purpose: sending
+            # Ollama the identical image for two different prompts makes the
+            # extraction call misbehave (a VOID receipt came back with
+            # is_cancellation=false, 3/3 times, despite 'VOID' being in its own
+            # transcription). A differently-sized copy avoids that.
+            document_type = classify_document(prepare_image_payload(file_path, CLASSIFY_IMAGE_PX))
             if document_type != "money_transfer":
                 print(f"   ⚠️  {filename} looks like '{document_type}', not a money-transfer receipt -- moving to {NEEDS_REVIEW_DIR}")
                 shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))

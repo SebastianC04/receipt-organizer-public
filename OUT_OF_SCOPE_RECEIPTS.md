@@ -37,10 +37,27 @@ post-hoc check on its output (including `raw_transcription`) inherits the
 same hallucination. A neutral classification prompt doesn't have that
 problem.
 
-Cost: one extra vision call per file, about 3.7s each with `qwen2.5vl:7b`
-(roughly 6 minutes added per 100-file batch).
+Cost: one extra vision call per file. It was about 3.7s each with
+`qwen2.5vl:7b` at 1024px; it now runs on a 512px copy, which should be
+faster but wasn't re-timed.
+
+**The classifier must not see the same image as extraction.** Sending Ollama
+the identical image for both prompts broke extraction: a VOID receipt came
+back `is_cancellation: false` 3/3 times (0/3 when extraction ran alone), even
+though its own transcription contained "VOID". The cause was inferred, not
+proven (likely Ollama reusing cached state for the identical image); a 512px or
+768px copy for the classifier fixed it 3/3. This slipped past the classifier
+tests, which only checked labels, and was found by running a real batch
+(`CLASSIFY_IMAGE_PX` in `extractor.py`). It was live in the first pushed
+version (`304d329`) until the fix.
 
 ## Validation (2026-09-29)
+
+Numbers in the first three bullets were measured at 1024px. Re-measured at
+the current 512px: 247/247 labeled receipts and 23/23 out-of-scope files
+(the 4 recharges + 19 bills) classified correctly. A 17-file real batch
+(isolated scratch dir, mixed Ria/Maxi/void/refund/bill/recharge/bad-extraction
+cases) landed every file where expected, and the void was stored as a void.
 
 - **Labeled real receipts** (247, from `receipt-evaluation`, Ria and Maxi):
   247/247 classified `money_transfer` -- no false positives.
