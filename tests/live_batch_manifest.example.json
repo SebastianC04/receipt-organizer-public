@@ -1,0 +1,13 @@
+{
+  "_comment": "Example only: replace the file names with receipts you have in your --samples folder. Destinations: stored, needs_review, duplicate.",
+  "ria": {
+    "normal_receipt.pdf": "stored",
+    "voided_receipt.pdf": "stored",
+    "refund_receipt.pdf": "stored",
+    "bill_payment.pdf": "needs_review",
+    "phone_recharge.pdf": "needs_review"
+  },
+  "maxi": {
+    "normal_receipt_maxi.pdf": "stored"
+  }
+}

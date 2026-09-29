@@ -59,7 +59,28 @@ analytics.py               - High-value-client flagging queries
 view_db.py                  - Quick CLI dump of the database for debugging
 generate_ria_mocks.py        - Synthetic receipt generator for demo/testing
 static/, templates/           - Dashboard frontend (vanilla JS + Jinja2)
+tests/                        - Unit tests and live model checks (see Tests)
 ```
+
+## Tests
+
+The unit tests need no model and no receipts:
+
+```
+python -m unittest discover tests
+```
+
+The `live_*.py` scripts in `tests/` need a running Ollama and receipts of your own
+(none are included). All of them run in a scratch directory, so your real database
+and scan folders are never touched:
+
+- `live_extraction_interference.py` - checks that running the classifier doesn't change
+  what extraction returns (this once made a VOID receipt come back as a normal one).
+  Give it a voided receipt if you have one.
+- `live_classifier_accuracy.py` - classifier accuracy on a folder of transfer receipts
+  and a folder of other documents (bills, recharges).
+- `live_batch.py` - runs a small batch through the real pipeline and checks where each
+  file ends up, using a manifest like `live_batch_manifest.example.json`.
 
 ## Stack
 
