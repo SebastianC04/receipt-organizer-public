@@ -131,6 +131,48 @@ MAXI_EXTRACTION_PROMPT = (
 )
 
 
+CLASSIFY_PROMPT = (
+    "Look at this scanned receipt and decide what kind of document it is. "
+    "Answer with exactly one label.\n\n"
+    "- money_transfer: a money-transfer receipt. It has a Sender and a Recipient "
+    "(or Remitente / Beneficiario), and a Total sent, typically with an Order No "
+    "or Receipt/Folio number. This includes voided and refund/canceled transfer receipts.\n"
+    "- phone_recharge: a phone top-up / recharge receipt. It has a Recharge "
+    "Information section (Country, Operator, Phone No.).\n"
+    "- bill_payment: a utility or bill payment receipt. It has a Biller Name and "
+    "an Account #.\n"
+    "- other: anything else.\n\n"
+    "Respond with JSON only: {\"document_type\": \"<label>\"}"
+)
+
+CLASSIFY_LABELS = ("money_transfer", "phone_recharge", "bill_payment", "other")
+
+
+def classify_document(encoded_image):
+    """
+    Cheap pre-classification: is this a money-transfer receipt (Ria or Maxi)
+    or some other document type we have no extraction prompt for? Kept
+    separate from the extraction call so the Ria/Maxi prompt can't prime the
+    model into inventing transfer fields on a bill or recharge receipt.
+    Returns one of CLASSIFY_LABELS; anything unparseable is "other" so it
+    fails safe into needs_review.
+    """
+    payload = {
+        "model": OLLAMA_MODEL,
+        "format": "json",
+        "messages": [{"role": "user", "content": CLASSIFY_PROMPT, "images": [encoded_image]}],
+        "stream": False,
+        "options": {"temperature": 0.0, "num_predict": 30},
+    }
+    response = requests.post(OLLAMA_URL, json=payload, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    try:
+        label = str(json.loads(response.json()['message']['content']).get('document_type', '')).strip().lower()
+    except Exception:
+        return "other"
+    return label if label in CLASSIFY_LABELS else "other"
+
+
 def get_extraction_prompt(receipt_type):
     receipt_type = (receipt_type or "ria").strip().lower()
     if receipt_type == "maxi":
@@ -235,7 +277,8 @@ def process_image_batch_queue(receipt_type="ria"):
     """
     Processes every file in pending_scans/ using the extraction prompt for
     the given receipt_type ("ria" or "maxi"). One mode applies to the whole
-    batch run -- mixed-type batches aren't auto-detected.
+    batch run -- Ria vs Maxi isn't auto-detected, but non-transfer documents
+    (bill payments, phone recharges) are, and go to needs_review/.
     """
     db_session = SessionLocal()
     image_files = [f for f in os.listdir(PENDING_DIR) if f.lower().endswith(VALID_EXTENSIONS)]
@@ -254,6 +297,15 @@ def process_image_batch_queue(receipt_type="ria"):
         # --- Stage 1: model call + JSON parsing ---
         try:
             encoded_string = prepare_image_payload(file_path)
+
+            # Pre-classification: bills/recharges share Ria/Maxi branding but
+            # have no transfer fields, and the extraction prompt would make
+            # the model invent them. Route anything else to needs_review.
+            document_type = classify_document(encoded_string)
+            if document_type != "money_transfer":
+                print(f"   ⚠️  {filename} looks like '{document_type}', not a money-transfer receipt -- moving to {NEEDS_REVIEW_DIR}")
+                shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))
+                continue
 
             payload = {
                 "model": OLLAMA_MODEL,
