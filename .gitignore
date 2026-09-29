@@ -10,3 +10,7 @@ processed_archive/
 duplicate_scans/
 needs_review/
 snapshots/
+
+# local-only tooling and one-off scripts
+.continue/
+change_receipt_total.py
