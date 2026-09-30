@@ -94,6 +94,16 @@ hallucinated `Deposit` rows. They have since been cleaned up (see below).
   receipt", not "is this Ria/Maxi". Nothing catches this yet.
 - The extraction checks below can't detect 9 of the 16 wrong recipient names
   in the labeled run (street lines with no marker word, and spelling slips).
+  Sender names have no check at all; the full run (below) found 2 sender
+  spelling slips that were stored silently.
+- Ollama's model runner (`llama-server`) grew to ~12.7 GB over the 247-file
+  run (system memory 24% -> 70% of 31 GB), well beyond the ~6 GB the model
+  itself needs. It didn't slow anything down, but a much larger batch could
+  run out of RAM. Cause unknown (real leak vs. cache growth); no mitigation
+  tried yet.
+- Stopping `ollama serve` does NOT stop its `llama-server.exe` runner, which
+  keeps the model in memory. Orphaned runners from earlier runs pushed memory
+  to 85% and slowed a run to ~90 s/file. Kill both process names.
 
 ## Unseen document types (tested 2026-09-29)
 
@@ -135,3 +145,36 @@ Checked against the 247-receipt labeled run (`receipt-evaluation`, commit
 The amount check parses on 179 of 182 Ria receipts; the other 3 are skipped,
 not flagged. This was measured on saved model output, not by re-running the
 model, so the live pipeline hasn't been re-run with these checks.
+
+## Full pipeline run (2026-09-29)
+
+All 247 labeled real receipts (182 Ria, 65 Maxi) were run through
+`process_image_batch_queue()` in a scratch directory with a fresh database,
+with the classifier (512px) and both post-extraction checks live, and every
+stored row compared against its label. 49 minutes, a steady ~11.9 s/file on a
+clean Ollama.
+
+| Outcome | Files |
+|---|---|
+| Stored, exactly matching the label | 225 (91%) |
+| Stored, but wrong vs. the label (silent errors) | 10 (4%) |
+| Sent to `needs_review/` by the post-extraction checks | 10 |
+| Sent to `needs_review/` by a model JSON failure | 1 |
+| Rejected by the classifier, duplicates, crashes | 0 |
+
+- **The checks had no false alarms.** All 10 files they flagged were genuinely
+  wrong extractions: 7 bad recipient names (3 absorbed "MEXICO", 1 absorbed
+  "GT", 3 with 7-8 words) and 3 bad amounts. This matches the offline
+  prediction exactly (7/16 names, 3/3 amounts).
+- **The 10 silent errors are the types the checks can't detect:** 4 recipients
+  that absorbed a street line, 4 recipient spelling slips, and 2 sender
+  spelling slips (a surname missing one letter). One further stored row
+  differed from its label only because the model kept an accented "Ñ" that
+  the label had stripped; it is not counted as an error.
+- **The JSON failure is a safe, reproducible failure:** one receipt makes the
+  model emit an invalid `\uXXXX` escape at the same character every time, so
+  it always lands in `needs_review/`. It predates the classifier and checks.
+- **Cancellations:** no mismatches among the stored voids and refunds.
+- **Not covered:** this is the labeled set only (receipts that were already
+  reviewed as normal), so it says nothing about how many new out-of-scope or
+  unusual documents exist in fresh scans.
