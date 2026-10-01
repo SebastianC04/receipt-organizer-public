@@ -103,5 +103,28 @@ class ClassifierParsing(unittest.TestCase):
         self.assertEqual(self._classify('{"document_type": "  Money_Transfer "}'), "money_transfer")
 
 
+class VoidCheckParsing(unittest.TestCase):
+    """detect_void_mark() must fail safe: anything but a clear true/false counts as marked (-> review)."""
+
+    def _ask(self, content):
+        class Resp:
+            def raise_for_status(self): pass
+            def json(self): return {"message": {"content": content}}
+        original = extractor.requests.post
+        extractor.requests.post = lambda *a, **k: Resp()
+        try:
+            return extractor.detect_void_mark("ignored")
+        finally:
+            extractor.requests.post = original
+
+    def test_clear_answers(self):
+        self.assertTrue(self._ask('{"void_marked": true}'))
+        self.assertFalse(self._ask('{"void_marked": false}'))
+
+    def test_unparseable_or_ambiguous_counts_as_marked(self):
+        for content in ("not json", "{}", '{"void_marked": "no"}', '{"void_marked": null}', ""):
+            self.assertTrue(self._ask(content), content)
+
+
 if __name__ == "__main__":
     unittest.main()

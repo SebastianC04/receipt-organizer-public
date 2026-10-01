@@ -104,6 +104,8 @@ hallucinated `Deposit` rows. They have since been cleaned up (see below).
 - Stopping `ollama serve` does NOT stop its `llama-server.exe` runner, which
   keeps the model in memory. Orphaned runners from earlier runs pushed memory
   to 85% and slowed a run to ~90 s/file. Kill both process names.
+- (Done 2026-10-01) VOIDs written by hand across a receipt could be invisible
+  to extraction; a separate VOID check now catches them (see below).
 
 ## Unseen document types (tested 2026-09-29)
 
@@ -178,3 +180,36 @@ clean Ollama.
 - **Not covered:** this is the labeled set only (receipts that were already
   reviewed as normal), so it says nothing about how many new out-of-scope or
   unusual documents exist in fresh scans.
+
+## VOID check (added 2026-10-01)
+
+A synthetic receipt with VOID written by hand across the page (from the
+`receipt-evaluation` regression set) exposed a gap: run on its own,
+extraction missed the VOID in 4 of 4 tries -- and its own
+`raw_transcription` never mentioned VOID either, so no check on extraction
+output could have caught it. A VOID stored as a normal receipt is a live
+transaction that should have been canceled, the most expensive kind of
+silent error.
+
+`detect_void_mark()` asks the model one separate question -- has this
+receipt been marked VOID, stamped, printed or by hand? -- on the 512px copy
+the classifier already uses. It runs in Stage 2b, **after** extraction, and
+only for Ria receipts extraction read as not canceled (Maxi cancellations
+are separate documents, not VOID marks), so the validated classifier ->
+extraction sequence is unchanged. If it sees a VOID that extraction didn't,
+the receipt goes to `needs_review/` rather than being auto-corrected. An
+unparseable answer also goes to review (fail safe).
+
+Validated before shipping:
+
+| Check | Result |
+|---|---|
+| Direct question vs. extraction on the hand-written VOID | 4/4 found vs. 0/4 |
+| 22 mixed receipts (3 synthetic voids, the real void, a real refund, 17 normal), at 1024px and 512px | 22/22 both sizes |
+| Every real Ria receipt in the labeled set (182: 1 void, 181 not) | 0 false alarms, 0 missed |
+| End to end: extraction forced to miss the VOID, real batch run | routed to `needs_review/`; a clean control stored normally |
+| Regression set, two passes | 0 silent errors; check never fired on the 13 non-void receipts |
+
+Cost: one extra model call (~3-4 s) per Ria receipt that isn't already a
+cancellation. The real labeled set holds only one void, so the evidence for
+catching voids is mostly synthetic; the false-alarm evidence is real.

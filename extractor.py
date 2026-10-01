@@ -232,6 +232,40 @@ def classify_document(encoded_image):
     return label if label in CLASSIFY_LABELS else "other"
 
 
+VOID_CHECK_PROMPT = (
+    "Look at this scanned receipt. Has someone marked it VOID? Look for the word VOID stamped, printed, "
+    "or written by hand anywhere on the page -- including large handwriting drawn across the printed text "
+    "and over the signature lines. Ordinary printed receipt text does not count.\n"
+    'Respond with JSON only: {"void_marked": true} or {"void_marked": false}'
+)
+
+
+def detect_void_mark(encoded_image):
+    """
+    A second look for a VOID mark, asked as its own question. Extraction can
+    miss a VOID handwritten across the page: on such a receipt the model's
+    extraction never mentioned VOID at all (4/4 runs), so no check on its
+    output could catch it, while this direct question found it every time
+    (22/22 correct on synthetic and real voids, refunds and normal receipts,
+    at 1024px and 512px). Unparseable answers count as marked, so they fail
+    safe into needs_review.
+    """
+    payload = {
+        "model": OLLAMA_MODEL,
+        "format": "json",
+        "messages": [{"role": "user", "content": VOID_CHECK_PROMPT, "images": [encoded_image]}],
+        "stream": False,
+        "options": {"temperature": 0.0, "num_predict": 20},
+    }
+    response = requests.post(OLLAMA_URL, json=payload, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    try:
+        answer = json.loads(response.json()['message']['content']).get('void_marked')
+    except Exception:
+        return True
+    return answer if isinstance(answer, bool) else True
+
+
 def get_extraction_prompt(receipt_type):
     receipt_type = (receipt_type or "ria").strip().lower()
     if receipt_type == "maxi":
@@ -365,7 +399,8 @@ def process_image_batch_queue(receipt_type="ria"):
             # extraction call misbehave (a VOID receipt came back with
             # is_cancellation=false, 3/3 times, despite 'VOID' being in its own
             # transcription). A differently-sized copy avoids that.
-            document_type = classify_document(prepare_image_payload(file_path, CLASSIFY_IMAGE_PX))
+            small_image = prepare_image_payload(file_path, CLASSIFY_IMAGE_PX)
+            document_type = classify_document(small_image)
             if document_type != "money_transfer":
                 print(f"   ⚠️  {filename} looks like '{document_type}', not a money-transfer receipt -- moving to {NEEDS_REVIEW_DIR}")
                 shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))
@@ -425,6 +460,16 @@ def process_image_batch_queue(receipt_type="ria"):
         problem = find_recipient_name_problem(recipient_name)
         if not problem and receipt_type == 'ria':
             problem = find_amount_problem(clean_data.get('raw_transcription', ''), amount)
+        # A VOID handwritten across a Ria receipt can be invisible to extraction.
+        # Ask about it separately -- after extraction, so the classifier ->
+        # extraction sequence stays exactly as validated. (Maxi cancellations
+        # are their own documents, not VOID marks.)
+        if not problem and receipt_type == 'ria' and not is_cancellation:
+            try:
+                if detect_void_mark(small_image):
+                    problem = "a VOID mark is visible, but extraction read it as a normal (not canceled) receipt"
+            except Exception as e:
+                problem = f"the VOID check failed ({e})"
         if problem:
             print(f"   ⚠️  Suspicious extraction for {filename}: {problem} -- moving to {NEEDS_REVIEW_DIR}")
             shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))
