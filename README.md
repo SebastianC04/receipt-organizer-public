@@ -1,5 +1,7 @@
 # Receipt Organizer
 
+[![CI](https://github.com/SebastianC04/receipt-organizer-public/actions/workflows/ci.yml/badge.svg)](https://github.com/SebastianC04/receipt-organizer-public/actions/workflows/ci.yml)
+
 A local, AI-powered tool for turning scanned money-transfer receipts (Ria, MaxiTransfers)
 into structured, searchable records — replacing a manual paper-ledger workflow. Runs
 entirely on your machine: receipts are read by a locally-hosted vision-language model
