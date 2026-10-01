@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import json
 import shutil
 import base64
@@ -10,6 +11,17 @@ from datetime import datetime
 from PIL import Image
 from database import SessionLocal, Deposit, init_db
 from analytics import flag_senders_by_monthly_total
+
+# The batch's progress messages use emoji. A console window prints them fine,
+# but when output goes to a pipe or log file Windows falls back to cp1252,
+# print() raises UnicodeEncodeError, and the whole batch dies on the first
+# receipt -- silently, when it was started from the dashboard. Swap
+# unencodable characters for '?' instead of crashing.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 init_db()
 

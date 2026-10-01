@@ -13,26 +13,68 @@ const receiptTypeSelect = document.getElementById('receipt-type-select') as HTML
 
 declare var heic2any: any;
 
+// The batch runs in the background on the server and takes ~10s per receipt,
+// so "done" means the pending queue has emptied -- not that the request returned.
+const POLL_MS = 2000;
+// Longer than the server's per-receipt model timeout (120s), so one slow
+// receipt isn't mistaken for a stuck batch.
+const STALL_MS = 5 * 60 * 1000;
+
+async function countPendingFiles(): Promise<number> {
+    const response = await fetch('/api/pending-files');
+    if (!response.ok) throw new Error(`pending-files: ${response.status}`);
+    const data = await response.json();
+    return (data.files || []).length;
+}
+
+async function refreshAfterBatch(): Promise<void> {
+    const page = window as any;
+    if (typeof fetchAnalytics === 'function') await fetchAnalytics();
+    if (typeof page.loadDatabaseRecords === 'function') await page.loadDatabaseRecords();
+    if (typeof page.loadPendingDropdown === 'function') await page.loadPendingDropdown();
+}
+
 if (processBtn) {
     processBtn.addEventListener('click', async () => {
         const receiptType = receiptTypeSelect ? receiptTypeSelect.value : 'ria';
-        if (statusText) statusText.innerText = `Processing batch as '${receiptType}' with Qwen2.5...`;
-        processBtn.disabled == true;
+        const setStatus = (text: string) => { if (statusText) statusText.innerText = text; };
+        processBtn.disabled = true;
 
         try {
+            const total = await countPendingFiles();
+            if (total === 0) {
+                setStatus("No files in pending_scans to process.");
+                return;
+            }
+            setStatus(`Processing ${total} receipt(s) as '${receiptType}' with Qwen2.5...`);
+
             const response = await fetch(`/api/process-batch?receipt_type=${encodeURIComponent(receiptType)}`, { method: 'POST' });
             if (!response.ok) throw new Error("Batch processing failed to initialize.");
 
-            // Poll or delay briefly before updating analytics
-            setTimeout(async () => {
-                if (typeof fetchAnalytics === 'function') await fetchAnalytics();
-                if (statusText) statusText.innerText = "Processing complete! Data updated.";
-                processBtn.disabled = false;
-            }, 3000);
+            let remaining = total;
+            let lastProgressAt = Date.now();
+            while (remaining > 0) {
+                await new Promise(resolve => setTimeout(resolve, POLL_MS));
+                const now = await countPendingFiles();
+                if (now !== remaining) {
+                    remaining = now;
+                    lastProgressAt = Date.now();
+                    setStatus(`Processing as '${receiptType}'... ${remaining} of ${total} left`);
+                } else if (Date.now() - lastProgressAt > STALL_MS) {
+                    await refreshAfterBatch();
+                    setStatus(`No progress for 5 minutes -- ${remaining} file(s) still pending. Check the server window for errors.`);
+                    return;
+                }
+            }
+
+            await refreshAfterBatch();
+            setStatus(`Done: ${total} receipt(s) processed. Data updated (anything suspicious is in needs_review).`);
         }
         catch (err) {
-            if (statusText) statusText.innerText = "Error running batch processing.";
-            processBtn.disabled = false; 
+            setStatus("Error running batch processing.");
+        }
+        finally {
+            processBtn.disabled = false;
         }
     });
 }
