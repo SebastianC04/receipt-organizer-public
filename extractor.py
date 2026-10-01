@@ -445,7 +445,11 @@ def process_image_batch_queue(receipt_type="ria"):
             clean_data = json.loads(raw_output)
 
         except requests.exceptions.Timeout:
-            print(f"   ❌ Timed out waiting on {OLLAMA_MODEL} for {filename} (>{REQUEST_TIMEOUT}s)")
+            # Moved out of the queue like every other failure: left in pending_scans
+            # it would be retried forever, and the dashboard waits for the queue to
+            # empty. Move it back to pending_scans to retry (e.g. once the GPU is free).
+            print(f"   ❌ Timed out waiting on {OLLAMA_MODEL} for {filename} (>{REQUEST_TIMEOUT}s) -- moving to {NEEDS_REVIEW_DIR}")
+            shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))
             continue
         except Exception as e:
             print(f"   ❌ Model call or JSON parsing failed for {filename}: {e}")

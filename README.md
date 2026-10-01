@@ -27,8 +27,16 @@ You'll need Python 3.10+ and a running [Ollama](https://ollama.com) instance wit
 ```
 python -m venv venv
 venv\Scripts\activate        (Windows)   OR   source venv/bin/activate   (Mac/Linux)
-pip install -r requirements.txt
+pip install -r requirements-lock.txt
 ```
+
+`requirements-lock.txt` pins the exact versions the app and its tests were verified with
+(Python 3.14). `requirements.txt` is the loose list -- install from it instead to pick up
+newer versions, then regenerate the lock file if everything still works.
+
+If you move or rename the project folder, recreate the venv: on Windows its launchers
+(`uvicorn.exe`, `pip.exe`) keep the old path and fail with "Unable to create process".
+`python -m uvicorn main:app --reload` works in the meantime.
 
 ## Try it without real receipts
 
