@@ -94,8 +94,9 @@ hallucinated `Deposit` rows. They have since been cleaned up (see below).
   receipt", not "is this Ria/Maxi". Nothing catches this yet.
 - The extraction checks below can't detect 9 of the 16 wrong recipient names
   in the labeled run (street lines with no marker word, and spelling slips).
-  Sender names have no check at all; the full run (below) found 2 sender
-  spelling slips that were stored silently.
+  Sender names had no check at all; the full run (below) found 2 sender
+  spelling slips that were stored silently. (2026-10-01: a second name read
+  now catches about half of the remaining wrong names -- see below.)
 - Ollama's model runner (`llama-server`) grew to ~12.7 GB over the 247-file
   run (system memory 24% -> 70% of 31 GB), well beyond the ~6 GB the model
   itself needs. It didn't slow anything down, but a much larger batch could
@@ -213,3 +214,47 @@ Validated before shipping:
 Cost: one extra model call (~3-4 s) per Ria receipt that isn't already a
 cancellation. The real labeled set holds only one void, so the evidence for
 catching voids is mostly synthetic; the false-alarm evidence is real.
+
+## Second name read (added 2026-10-01)
+
+After the other checks, 10 of the 247 labeled real receipts were still stored
+with a wrong name and no warning: one-letter misreadings (including a sender
+surname misread the same way on several receipts) and street lines glued onto a
+recipient name. Two ideas that did **not** work, kept here so nobody retries
+them blind:
+
+- **Checking against history** (flag a name close to a better-known one in
+  `receipts.db`): caught 1 of the 10, falsely flagged 12 correct names. The
+  history comes from the same model, so it carries the same systematic
+  misreadings -- one misread sender appears in it 3x, the correct spelling 1x.
+- **A narrow "read just the names" prompt, first drafts**: asking for names
+  "letter by letter" made the model drop the spaces; asking for "the name and
+  nothing else" made it drop second surnames (43% of correct names). Both looked
+  like disagreements.
+
+What works: `find_name_disagreement()` asks the model to copy the whole line
+under each name label, warning that the names have two or three surnames, and
+compares letters only (spacing, punctuation, case and accents don't count). It
+runs last in Stage 2b, only for receipts about to be stored; a disagreement
+sends the receipt to `needs_review/` with both readings. A failed or empty
+second read is skipped, not flagged (a skipped second opinion isn't dangerous,
+unlike a missed VOID).
+
+Full 247-receipt run, before vs. with the check:
+
+| | Before | With the check |
+|---|---|---|
+| Silent errors (stored wrong, nobody told) | 10 | 5 |
+| Flagged for review | 11 | 20 |
+| Stored data correct | 95.8% | 97.8% |
+| Time per receipt | ~11.8 s | ~15.8 s |
+
+- 5 real catches, all receipts the previous run stored wrong; 4 false flags
+  (~1.6% of good receipts go to review). On its own the check had 2 false flags
+  on 452 correct names; inside the pipeline, 4.
+- No other receipt changed outcome, so the extra call didn't disturb
+  extraction or the other checks.
+- The other 5 wrong names are read identically by the second read, so no
+  re-read catches them.
+- Cost: one more model call per stored receipt, ~1/3 slower batches. Kept on
+  purpose: a wrong name stored silently is worse than a minute of review.

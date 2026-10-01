@@ -126,5 +126,40 @@ class VoidCheckParsing(unittest.TestCase):
             self.assertTrue(self._ask(content), content)
 
 
+class NameSecondRead(unittest.TestCase):
+    """find_name_disagreement(): only a different *reading* counts, and a failed check is skipped, not flagged."""
+
+    def _check(self, content, sender="JUAN PEREZ LOPEZ", recipient="MARIA PEREZ LOPEZ"):
+        class Resp:
+            def raise_for_status(self): pass
+            def json(self): return {"message": {"content": content}}
+        original = extractor.requests.post
+        extractor.requests.post = lambda *a, **k: Resp()
+        try:
+            return extractor.find_name_disagreement("ignored", sender, recipient)
+        finally:
+            extractor.requests.post = original
+
+    def test_same_reading_passes(self):
+        self.assertIsNone(self._check('{"sender_name": "JUAN PEREZ LOPEZ", "recipient_name": "MARIA PEREZ LOPEZ"}'))
+
+    def test_formatting_differences_are_not_disagreements(self):
+        # case, extra spaces, missing space, accent, punctuation
+        self.assertIsNone(self._check('{"sender_name": "juan  perez-lopez", "recipient_name": "MARÍA PEREZLOPEZ"}'))
+
+    def test_one_letter_misreading_is_flagged(self):
+        problem = self._check('{"sender_name": "JUAN PERES LOPEZ", "recipient_name": "MARIA PEREZ LOPEZ"}')
+        self.assertIn("sender_name", problem)
+
+    def test_absorbed_extra_line_is_flagged(self):
+        problem = self._check('{"sender_name": "JUAN PEREZ LOPEZ", "recipient_name": "MARIA PEREZ LOPEZ"}',
+                              recipient="MARIA PEREZ LOPEZ CALLE OCHO")
+        self.assertIn("recipient_name", problem)
+
+    def test_failed_or_empty_second_read_is_skipped(self):
+        for content in ("not json", "{}", "[]", '{"sender_name": "", "recipient_name": null}', ""):
+            self.assertIsNone(self._check(content), content)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import json
+import unicodedata
 import shutil
 import base64
 import io
@@ -278,6 +279,63 @@ def detect_void_mark(encoded_image):
     return answer if isinstance(answer, bool) else True
 
 
+NAME_CHECK_PROMPT = (
+    "Copy two lines from this money-transfer receipt, exactly as printed.\n"
+    "- sender_name: the complete line of text directly under 'SENDER / CLIENTE' (on Ria receipts, skip the "
+    "'Customer No' line), or the text after 'Sender/Remitente:' on Maxi receipts.\n"
+    "- recipient_name: the complete line of text directly under 'RECIPIENT / BENEFICIARIO', or the text after "
+    "'Recipient/Beneficiario:' on Maxi receipts.\n"
+    "Copy the whole line: every word on it, in order. These are Hispanic names, so they usually have two or "
+    "three surnames -- do not shorten them. Copy only that one line, not the line after it.\n"
+    'Respond with JSON only: {"sender_name": "...", "recipient_name": "..."}'
+)
+
+
+def _name_letters(value):
+    """A name reduced to its letters: spacing, punctuation, case and accents don't count as a different reading."""
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"[^A-Z]", "", text.upper())
+
+
+def find_name_disagreement(encoded_image, sender_name, recipient_name):
+    """
+    A second, independent read of the two names, asked as its own narrow
+    question. Where it disagrees with extraction, one of the two is a
+    misreading, so the receipt goes to review. On the 247 real labeled
+    receipts this caught 5 of the 10 wrong names that every other check let
+    through (one-letter misreadings, a street line glued onto a name), and
+    disagreed with only 2 of 452 correct names. History can't do this job: the
+    model's past readings carry the same systematic misspellings.
+
+    Returns a description of the disagreement, or None. An unreadable answer
+    or an empty name is skipped rather than flagged -- unlike a missed VOID, a
+    skipped second opinion isn't dangerous.
+    """
+    payload = {
+        "model": OLLAMA_MODEL,
+        "format": "json",
+        "messages": [{"role": "user", "content": NAME_CHECK_PROMPT, "images": [encoded_image]}],
+        "stream": False,
+        "options": {"temperature": 0.0, "num_predict": 80},
+    }
+    response = requests.post(OLLAMA_URL, json=payload, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    try:
+        second = json.loads(response.json()['message']['content'])
+    except Exception:
+        return None
+    if not isinstance(second, dict):
+        return None
+    for field, extracted in (("sender_name", sender_name), ("recipient_name", recipient_name)):
+        reread = second.get(field)
+        if not isinstance(reread, str) or not _name_letters(reread):
+            continue
+        if _name_letters(reread) != _name_letters(extracted):
+            return f"{field} read as {extracted!r}, but a second read says {reread!r}"
+    return None
+
+
 def get_extraction_prompt(receipt_type):
     receipt_type = (receipt_type or "ria").strip().lower()
     if receipt_type == "maxi":
@@ -486,6 +544,14 @@ def process_image_batch_queue(receipt_type="ria"):
                     problem = "a VOID mark is visible, but extraction read it as a normal (not canceled) receipt"
             except Exception as e:
                 problem = f"the VOID check failed ({e})"
+        # One-letter misreadings and street lines glued onto a name repeat
+        # themselves in the model's own transcription, so nothing above sees
+        # them; a second, narrow read of just the names sometimes does.
+        if not problem:
+            try:
+                problem = find_name_disagreement(encoded_string, sender_name, recipient_name)
+            except Exception as e:
+                print(f"   (name check skipped for {filename}: {e})")
         if problem:
             print(f"   ⚠️  Suspicious extraction for {filename}: {problem} -- moving to {NEEDS_REVIEW_DIR}")
             shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))
