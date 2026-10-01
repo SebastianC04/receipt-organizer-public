@@ -280,14 +280,17 @@ def detect_void_mark(encoded_image):
 
 
 NAME_CHECK_PROMPT = (
-    "Copy two lines from this money-transfer receipt, exactly as printed.\n"
+    "Copy three lines from this money-transfer receipt, exactly as printed.\n"
     "- sender_name: the complete line of text directly under 'SENDER / CLIENTE' (on Ria receipts, skip the "
     "'Customer No' line), or the text after 'Sender/Remitente:' on Maxi receipts.\n"
     "- recipient_name: the complete line of text directly under 'RECIPIENT / BENEFICIARIO', or the text after "
-    "'Recipient/Beneficiario:' on Maxi receipts.\n"
-    "Copy the whole line: every word on it, in order. These are Hispanic names, so they usually have two or "
-    "three surnames -- do not shorten them. Copy only that one line, not the line after it.\n"
-    'Respond with JSON only: {"sender_name": "...", "recipient_name": "..."}'
+    "'Recipient/Beneficiario:' on that same line on Maxi receipts.\n"
+    "- recipient_next_line: the line printed directly below the recipient_name line (usually a street, city "
+    "or country).\n"
+    "Copy each whole line: every word on it, in order. These are Hispanic names, so they usually have two or "
+    "three surnames -- do not shorten them. Keep each line separate: never join two printed lines into one "
+    "answer.\n"
+    'Respond with JSON only: {"sender_name": "...", "recipient_name": "...", "recipient_next_line": "..."}'
 )
 
 
@@ -308,6 +311,12 @@ def find_name_disagreement(encoded_image, sender_name, recipient_name):
     disagreed with only 2 of 452 correct names. History can't do this job: the
     model's past readings carry the same systematic misspellings.
 
+    The prompt also asks for the line *below* the recipient name, which is not
+    compared. Having to write that line separately is what stops the second
+    read from gluing a street onto the name the way extraction does -- without
+    it, a street named after a person ("RICARDO FLORES MAGON") got glued on by
+    the second read too, hiding real errors and flagging correct names.
+
     Returns a description of the disagreement, or None. An unreadable answer
     or an empty name is skipped rather than flagged -- unlike a missed VOID, a
     skipped second opinion isn't dangerous.
@@ -317,7 +326,7 @@ def find_name_disagreement(encoded_image, sender_name, recipient_name):
         "format": "json",
         "messages": [{"role": "user", "content": NAME_CHECK_PROMPT, "images": [encoded_image]}],
         "stream": False,
-        "options": {"temperature": 0.0, "num_predict": 80},
+        "options": {"temperature": 0.0, "num_predict": 120},
     }
     response = requests.post(OLLAMA_URL, json=payload, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()

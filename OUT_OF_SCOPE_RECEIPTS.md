@@ -258,3 +258,29 @@ Full 247-receipt run, before vs. with the check:
   re-read catches them.
 - Cost: one more model call per stored receipt, ~1/3 slower batches. Kept on
   purpose: a wrong name stored silently is worse than a minute of review.
+
+### Reworded the same day: ask for the line below the name too
+
+The evaluation repo's regression set then grew four made-up receipts with a
+street named after a person directly under the recipient name ("RICARDO FLORES
+MAGON"). They showed the second read falling for the pattern it polices: it
+glued the street onto the name itself, so it agreed with a wrong extraction
+(a silent error) and disagreed with a right one (a false flag).
+
+Fix: the prompt now asks for three lines -- sender name, recipient name, and
+the line printed *below* the recipient name -- and says never to join two
+printed lines. The third answer isn't compared; having to write that line
+separately is what stops the model gluing it on.
+
+| | Old wording | New wording |
+|---|---|---|
+| Regression set (20 made-up receipts): silent errors | 1 | 0 |
+| Regression set: false flags from the name check | 1 | 0 |
+| Real set (247): silent errors | 5 | 5 |
+| Real set: name-check real catches / false flags | 5 / 4 | 5 / 3 |
+| Real set: stored data correct | 97.8% | 97.8% |
+| Time per receipt | ~15.8 s | ~16.4 s |
+
+- Regression result identical across two runs. On the real set the gain is
+  small (one false flag fewer); the 5 remaining wrong names are still read
+  the same way twice.
