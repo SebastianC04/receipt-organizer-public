@@ -14,3 +14,4 @@ snapshots/
 # local-only tooling and one-off scripts
 .continue/
 change_receipt_total.py
+needs_review_log.json

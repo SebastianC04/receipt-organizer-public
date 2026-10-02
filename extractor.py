@@ -30,6 +30,9 @@ PENDING_DIR = "pending_scans"
 ARCHIVE_DIR = "processed_archive"
 DUPLICATE_DIR = "duplicate_scans"
 NEEDS_REVIEW_DIR = "needs_review"
+# Why each file in needs_review/ is there, for the dashboard. Kept next to the
+# folder rather than in receipts.db so restoring a snapshot doesn't lose it.
+REVIEW_LOG = "needs_review_log.json"
 
 OLLAMA_MODEL = "qwen2.5vl:7b"
 OLLAMA_URL = "http://localhost:11434/api/chat"
@@ -342,6 +345,36 @@ def find_name_disagreement(second, sender_name, recipient_name):
     return None
 
 
+def load_review_log():
+    """{filename: {"reason", "receipt_type", "flagged_at"}} for files sent to needs_review/."""
+    try:
+        with open(REVIEW_LOG, encoding="utf-8") as f:
+            log = json.load(f)
+        return log if isinstance(log, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_review_log(log):
+    with open(REVIEW_LOG, "w", encoding="utf-8") as f:
+        json.dump(log, f, indent=2, ensure_ascii=False)
+
+
+def send_to_review(file_path, filename, reason, receipt_type):
+    """Moves a receipt to needs_review/ and records why, so the dashboard can say so."""
+    shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))
+    try:
+        log = load_review_log()
+        log[filename] = {
+            "reason": reason,
+            "receipt_type": receipt_type,
+            "flagged_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        save_review_log(log)
+    except OSError as e:
+        print(f"   (could not record the review reason for {filename}: {e})")
+
+
 def get_extraction_prompt(receipt_type):
     receipt_type = (receipt_type or "ria").strip().lower()
     if receipt_type == "maxi":
@@ -479,7 +512,8 @@ def process_image_batch_queue(receipt_type="ria"):
             document_type = classify_document(small_image)
             if document_type != "money_transfer":
                 print(f"   ⚠️  {filename} looks like '{document_type}', not a money-transfer receipt -- moving to {NEEDS_REVIEW_DIR}")
-                shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))
+                send_to_review(file_path, filename,
+                               f"Looks like a {document_type.replace('_', ' ')} document, not a money transfer", receipt_type)
                 continue
 
             payload = {
@@ -513,11 +547,15 @@ def process_image_batch_queue(receipt_type="ria"):
             # it would be retried forever, and the dashboard waits for the queue to
             # empty. Move it back to pending_scans to retry (e.g. once the GPU is free).
             print(f"   ❌ Timed out waiting on {OLLAMA_MODEL} for {filename} (>{REQUEST_TIMEOUT}s) -- moving to {NEEDS_REVIEW_DIR}")
-            shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))
+            send_to_review(file_path, filename, "The model timed out reading this receipt", receipt_type)
             continue
         except Exception as e:
             print(f"   ❌ Model call or JSON parsing failed for {filename}: {e}")
-            shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))
+            if isinstance(e, requests.exceptions.ConnectionError):
+                reason = "The model could not be reached -- is Ollama running?"
+            else:
+                reason = f"The model's answer could not be used ({e})"
+            send_to_review(file_path, filename, reason, receipt_type)
             continue
 
         # --- Stage 2: field-level validation ---
@@ -533,7 +571,7 @@ def process_image_batch_queue(receipt_type="ria"):
             order_num = normalize_order_number(clean_data.get('order_number'))
         except Exception as e:
             print(f"   ❌ Field validation failed for {filename}: {e}")
-            shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))
+            send_to_review(file_path, filename, f"A field could not be read ({e})", receipt_type)
             continue
 
         # --- Stage 2b: sanity checks on values the model is known to get wrong ---
@@ -562,7 +600,8 @@ def process_image_batch_queue(receipt_type="ria"):
                     problem = find_name_disagreement(second, sender_name, recipient_name)
         if problem:
             print(f"   ⚠️  Suspicious extraction for {filename}: {problem} -- moving to {NEEDS_REVIEW_DIR}")
-            shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))
+            reason = problem.replace("sender_name", "sender name").replace("recipient_name", "recipient name")
+            send_to_review(file_path, filename, reason[:1].upper() + reason[1:], receipt_type)
             continue
 
         # --- Stage 3: cancellation linking, or duplicate protection ---

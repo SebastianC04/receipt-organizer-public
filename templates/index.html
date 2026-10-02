@@ -3,295 +3,517 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Receipt Analytics Dashboard</title>
+    <title>Receipt Organizer</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/heic2any"></script>
+    <style>
+        .row-flagged { background-color: rgba(239, 68, 68, 0.08); border-left: 3px solid #ef4444; }
+        .row-flagged:hover { background-color: rgba(239, 68, 68, 0.15) !important; }
+        .row-canceled { opacity: 0.55; }
+        .edit-amount-input {
+            background: #1f2937; border: 1px solid #f59e0b;
+            color: #fcd34d; border-radius: 4px; padding: 1px 6px;
+            font-family: monospace; font-size: 0.85em; width: 90px;
+        }
+        .monthly-merged { vertical-align: middle; border-left: 2px solid #374151; text-align: right; }
+
+        @media print {
+            @page { size: landscape; margin: 10mm 8mm; }
+            body { background: white !important; color: black !important; padding: 0 !important; }
+            .no-print { display: none !important; }
+            #print-section { display: block !important; }
+            #print-section h2 { font-size: 13pt; font-weight: bold; margin-bottom: 6px; color: black; }
+            #print-section .print-meta { font-size: 8pt; color: #555; margin-bottom: 8px; }
+            #print-table { width: 100%; border-collapse: collapse; font-size: 8pt; font-family: Arial, sans-serif; }
+            #print-table th {
+                background: #dbeafe !important; color: #1e3a5f !important; border: 1px solid #93c5fd;
+                padding: 4px 6px; text-align: left; font-weight: bold; white-space: nowrap;
+                -webkit-print-color-adjust: exact; print-color-adjust: exact;
+            }
+            #print-table td { border: 1px solid #d1d5db; padding: 3px 6px; vertical-align: middle; word-break: break-word; }
+            #print-table tr:nth-child(even) td { background: #f9fafb !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            #print-table .merged-total-cell {
+                background: #fef3c7 !important; font-weight: bold; text-align: right; vertical-align: middle;
+                border-left: 2px solid #f59e0b; -webkit-print-color-adjust: exact; print-color-adjust: exact;
+            }
+            #print-table .col-date    { width: 10%; }
+            #print-table .col-seq     { width: 12%; }
+            #print-table .col-sender  { width: 20%; }
+            #print-table .col-recip   { width: 20%; }
+            #print-table .col-amount  { width: 11%; text-align: right; }
+            #print-table .col-monthly { width: 12%; }
+        }
+    </style>
 </head>
 <body class="bg-gray-900 text-gray-100 font-sans min-h-screen">
-    <nav class="bg-gray-800 border-b border-gray-700 p-4 shadow-md">
-        <div class="max-w-7xl mx-auto flex justify-between items-center">
-            <h1 class="text-xl font-bold text-emerald-400">📊 ReceiptIntel Local</h1>
-            <span class="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-1 rounded">Private System</span>
-        </div>
-    </nav>
 
-    <main class="max-w-7xl mx-auto p-6 space-y-6">
-        <!-- Batch Processing Operations Hub -->
-        <div class="bg-gray-800 border border-gray-700 rounded-xl p-4 flex flex-col sm:flex-row justify-between items-center gap-4 shadow-sm">
-            <div>
-                <h3 class="text-sm font-semibold text-gray-200">Scanner Batch Buffer</h3>
-                <p class="text-xs text-gray-400 mt-0.5">Found <span class="text-emerald-400 font-bold font-mono text-sm">{{ pending_count }}</span> scanned file(s) waiting in your network directory.</p>
+    <!-- Print-only report of flagged senders (hidden on screen) -->
+    <div id="print-section" style="display:none">
+        <h2>Flagged Senders — Monthly Transfer Report</h2>
+        <p class="print-meta" id="print-meta"></p>
+        <table id="print-table">
+            <thead>
+                <tr>
+                    <th class="col-date">Date</th>
+                    <th class="col-seq">Sequence / Folio No.</th>
+                    <th class="col-sender">Sender Name</th>
+                    <th class="col-recip">Recipient Name</th>
+                    <th class="col-amount">Amount (USD)</th>
+                    <th class="col-monthly">Monthly Total</th>
+                </tr>
+            </thead>
+            <tbody id="print-body"></tbody>
+        </table>
+    </div>
+
+    <div class="no-print">
+        <nav class="bg-gray-800 border-b border-gray-700 px-6 py-4">
+            <div class="max-w-7xl mx-auto">
+                <h1 class="text-xl font-bold text-emerald-400">Receipt Organizer</h1>
             </div>
-            <div class="flex items-center gap-3 w-full sm:w-auto">
-                <select id="receipt-type-select" class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-sm text-gray-200 focus:outline-none focus:border-emerald-500">
-                    <option value="ria" selected>Ria</option>
-                    <option value="maxi">Maxi</option>
-                </select>
-                <button id="process-batch-btn" class="w-full sm:w-auto px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 font-medium text-sm rounded-lg shadow-md transition-all flex items-center justify-center gap-2 text-white">
-                    <span>⚡</span> Run Local AI Batch Extraction
-                </button>
-            </div>
-        </div>
+        </nav>
 
-        <div class="flex items-center gap-4 my-2">
-            <span id="batch-status-text" class="text-sm text-gray-400 italic"></span>
-        </div>
+        <main class="max-w-7xl mx-auto p-6 space-y-6">
 
-        <!-- Diagnostic & Inspection Hub (Dropdown Enabled) -->
-        <section class="bg-gray-800 border border-gray-700 rounded-xl p-6 shadow-sm space-y-4">
-            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <!-- Batch -->
+            <section class="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-2">
+                <div class="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-200">Process scans</h2>
+                        <p class="text-sm text-gray-400 mt-0.5">
+                            <span id="pending-count" class="text-emerald-400 font-bold font-mono">–</span> scan(s) waiting in <code class="text-xs">pending_scans</code>
+                        </p>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <label for="receipt-type-select" class="text-sm text-gray-400">Receipt type</label>
+                        <select id="receipt-type-select" class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-sm text-gray-200 focus:outline-none focus:border-emerald-500">
+                            <option value="ria" selected>Ria</option>
+                            <option value="maxi">Maxi</option>
+                        </select>
+                        <button id="process-batch-btn" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed font-medium text-sm rounded-lg text-white whitespace-nowrap">
+                            Run batch
+                        </button>
+                    </div>
+                </div>
+                <p id="batch-status-text" class="text-sm text-gray-400 italic min-h-[1.25rem]"></p>
+            </section>
+
+            <!-- Needs review -->
+            <section class="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-3">
                 <div>
                     <h2 class="text-lg font-semibold text-gray-200 flex items-center gap-2">
-                        <span>🔍</span> AI Vision Diagnostics & Inspection
+                        Needs review
+                        <span id="review-count" class="hidden text-xs font-mono bg-amber-500/15 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full"></span>
                     </h2>
-                    <p class="text-xs text-gray-400 mt-0.5">Test individual scans against Qwen2.5-VL to inspect raw outputs without writing to SQL.</p>
+                    <p class="text-sm text-gray-400 mt-0.5">Scans the batch set aside instead of storing. They are not in the records below.</p>
                 </div>
-                <div class="flex items-center gap-2 w-full sm:w-auto">
-                    <select id="debug-filename" class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-emerald-500 w-full sm:w-64 font-mono">
-                        <option value="">Loading pending scans...</option>
-                    </select>
-                    <button id="btn-inspect" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium text-sm rounded-lg shadow transition-all whitespace-nowrap">
-                        Inspect Image
-                    </button>
-                </div>
-            </div>
-
-            <!-- Inspection Results Drawer -->
-            <div id="inspection-drawer" class="hidden grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-gray-700">
-                <div>
-                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Raw Model Text Output</h4>
-                    <pre id="raw-ai-output" class="bg-gray-950 p-3 rounded-lg border border-gray-800 font-mono text-xs text-amber-300 overflow-x-auto min-h-[120px] max-h-[200px] whitespace-pre-wrap"></pre>
-                </div>
-                <div>
-                    <h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Parsed JSON Object</h4>
-                    <pre id="parsed-json-output" class="bg-gray-950 p-3 rounded-lg border border-gray-800 font-mono text-xs text-emerald-400 overflow-x-auto min-h-[120px] max-h-[200px]"></pre>
-                </div>
-            </div>
-        </section>
-
-        <!-- Database Records Viewer & Management -->
-        <section class="bg-gray-800 border border-gray-700 rounded-xl p-6 shadow-sm space-y-4">
-            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                <div>
-                    <h2 class="text-lg font-semibold text-gray-200 flex items-center gap-2">
-                        <span>🗄️</span> Database Records Viewer (<code class="text-xs font-mono text-emerald-400">receipts.db</code>)
-                    </h2>
-                    <p class="text-xs text-gray-400 mt-0.5">View, search, export, or clear stored client transactions.</p>
-                </div>
-                <div class="flex items-center gap-2 w-full sm:w-auto">
-                    <!-- CHANGED: Placeholder text reflects searching by sender name -->
-                    <input type="text" id="search-client" placeholder="Search sender name..." oninput="loadDatabaseRecords()" class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-emerald-500 font-mono w-full sm:w-48">
-                    <button onclick="window.open('/database', '_blank')" class="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white font-medium text-xs rounded-lg shadow transition-all flex items-center gap-1 whitespace-nowrap">
-                        <span>⛶</span> Expand Database View
-                    </button>
-                    <input id="export-filename" type="text" placeholder="Export filename..." value="receipts_export"
-                           class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-emerald-500 w-40">
-                    <button onclick="exportCSV()" class="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs rounded-lg shadow transition-all flex items-center gap-1 whitespace-nowrap">
-                        <span>💾</span> Export CSV
-                    </button>
-                    <button onclick="saveSnapshot()" class="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs rounded-lg shadow transition-all flex items-center gap-1 whitespace-nowrap">
-                        <span>📦</span> Save Snapshot
-                    </button>
-                    <button onclick="confirmClearDatabase()" class="px-3 py-2 bg-red-600/80 hover:bg-red-600 text-white font-medium text-xs rounded-lg shadow transition-all flex items-center gap-1 whitespace-nowrap">
-                        <span>🗑️</span> Dump Table
-                    </button>
-                </div>
-            </div>
-
-            <!-- Main Database Records Table -->
-            <div class="overflow-x-auto max-h-80">
-                <table class="w-full text-left border-collapse">
-                    <thead class="sticky top-0 bg-gray-800 border-b border-gray-700 text-gray-400 text-xs uppercase font-mono">
-                        <tr>
-                            <th class="py-2 px-3">Date</th>
-                            <th class="py-2 px-3">Type</th>
-                            <th class="py-2 px-3">Sequence / Folio No.</th>
-                            <th class="py-2 px-3">Sender Name</th>
-                            <th class="py-2 px-3 text-right">Total (USD)</th>
-                            <th class="py-2 px-3">Recipient Name</th>
-                        </tr>
-                    </thead>
-                    <tbody id="db-table-body" class="text-gray-200 divide-y divide-gray-700/50 font-mono text-sm">
-                        <!-- Records dynamically injected by JS below -->
-                    </tbody>
-                </table>
-            </div>
-        </section>
-
-        <!-- Drag and Drop Uploader -->
-        <section class="bg-gray-800 border border-gray-700 rounded-xl p-6 shadow-sm">
-            <h2 class="text-lg font-semibold mb-4 text-gray-200">Upload New Receipts</h2>
-            <div id="drop-zone" class="border-2 border-dashed border-gray-600 hover:border-emerald-500 rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer transition bg-gray-800/50">
-                <span class="text-4xl mb-2">📥</span>
-                <p class="text-gray-300 font-medium">Drag & drop files here, or <span class="text-emerald-400 underline">browse</span></p>
-                <p class="text-gray-500 text-xs mt-1">Supports PNG, JPG, HEIC, PDF up to 10MB</p>
-                <input type="file" id="file-input" class="hidden" accept="image/*,.pdf" multiple>
-            </div>
-            <div id="upload-status" class="mt-3 text-sm hidden"></div>
-        </section>
-
-        <!-- Analytics & Logs Section -->
-        <section class="grid grid-cols-1 md:grid-cols-2 gap-6">
-
-            <!-- Live System Execution Terminal Log -->
-            <div class="bg-gray-800 border border-gray-700 rounded-xl p-6 shadow-sm flex flex-col">
-                <h3 class="text-md font-semibold text-gray-300 mb-3 flex justify-between items-center">
-                    <span>💻 Local AI Core Processing Logs</span>
-                    <span class="text-xs text-gray-500 font-mono" id="log-timestamp">Idle</span>
-                </h3>
-                <div id="terminal-console" class="flex-grow min-h-[220px] max-h-[300px] overflow-y-auto bg-gray-950 rounded-lg p-4 font-mono text-xs text-emerald-400 border border-gray-800 space-y-1">
-                    <p class="text-gray-500">// System ready. Waiting for automatic scanner tray document upload drops...</p>
-                </div>
-            </div>
-
-            <!-- Volume Analysis Panel -->
-            <div class="bg-gray-800 border border-gray-700 rounded-xl p-6 shadow-sm">
-                <h3 class="text-md font-semibold text-amber-400 mb-3">⚠️ Monthly Transfer Volume Check (> $3,000)</h3>
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left border-collapse">
-                        <thead>
-                            <tr class="border-b border-gray-700 text-gray-400 text-sm">
-                                <th class="pb-2">Sender Name</th>
-                                <th class="pb-2 text-right">Monthly Total</th>
+                <div class="overflow-x-auto max-h-80 overflow-y-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="sticky top-0 bg-gray-800 border-b border-gray-700 text-gray-400">
+                            <tr>
+                                <th class="py-2 px-3 font-medium">File</th>
+                                <th class="py-2 px-3 font-medium">Why</th>
+                                <th class="py-2 px-3 font-medium">Type</th>
+                                <th class="py-2 px-3 font-medium">Set aside</th>
+                                <th class="py-2 px-3"></th>
                             </tr>
                         </thead>
-                        <tbody id="flagged-table-body" class="text-gray-200 divide-y divide-gray-700/50 font-mono text-sm">
-                            <tr>
-                                <td colspan="2" class="py-6 text-center text-xs text-gray-500 font-sans italic">
-                                    No high volume thresholds crossed.
-                                </td>
-                            </tr>
+                        <tbody id="review-body" class="divide-y divide-gray-700/50">
+                            <tr><td colspan="5" class="py-4 px-3 text-gray-500">Loading...</td></tr>
                         </tbody>
                     </table>
                 </div>
-            </div>
-        </section>
-    </main>
+            </section>
+
+            <!-- Records -->
+            <section class="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-3">
+                <div class="flex flex-col lg:flex-row justify-between lg:items-center gap-3">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-200">Records</h2>
+                        <p class="text-sm text-gray-400 mt-0.5">Red rows: the sender's monthly total is over $3,000. Click an amount to correct it.</p>
+                    </div>
+                    <div class="flex gap-2 flex-wrap">
+                        <input id="search-input" type="text" placeholder="Search sender..." aria-label="Search sender"
+                               class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm w-48 focus:outline-none focus:border-emerald-500">
+                        <select id="sort-select" aria-label="Sort records" class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500">
+                            <option value="recent" selected>Most recent</option>
+                            <option value="sequence">Sequence / folio no.</option>
+                            <option value="sender">Sender name (A–Z)</option>
+                            <option value="flagged">Flagged first</option>
+                            <option value="flag-view">Flagged only</option>
+                        </select>
+                        <button id="recompute-btn" onclick="recomputeFlags()" class="bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded-lg text-sm font-medium">Recompute flags</button>
+                        <button onclick="printFlagged()" class="bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded-lg text-sm font-medium">Print flagged</button>
+                        <button onclick="exportCSV()" class="bg-emerald-600 hover:bg-emerald-500 px-3 py-2 rounded-lg text-sm font-medium text-white">Export CSV</button>
+                    </div>
+                </div>
+                <div class="overflow-x-auto max-h-[36rem] overflow-y-auto border border-gray-700 rounded-lg">
+                    <table class="w-full text-sm" id="records-table">
+                        <thead class="bg-gray-800 text-gray-400 text-left sticky top-0 z-10 border-b border-gray-700">
+                            <tr>
+                                <th class="py-2.5 px-3 font-medium">Date</th>
+                                <th class="py-2.5 px-3 font-medium">Type</th>
+                                <th class="py-2.5 px-3 font-medium">Seq / Folio</th>
+                                <th class="py-2.5 px-3 font-medium">Sender</th>
+                                <th class="py-2.5 px-3 font-medium text-right">Total (USD)</th>
+                                <th class="py-2.5 px-3 font-medium text-right">Monthly total</th>
+                                <th class="py-2.5 px-3 font-medium">Recipient</th>
+                                <th class="py-2.5 px-3 font-medium">Status</th>
+                                <th class="py-2.5 px-3 font-medium">Scan</th>
+                            </tr>
+                        </thead>
+                        <tbody id="records-body">
+                            <tr><td colspan="9" class="text-center py-6 text-gray-500">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Upload -->
+            <section class="bg-gray-800 border border-gray-700 rounded-xl p-5">
+                <h2 class="text-lg font-semibold mb-3 text-gray-200">Upload receipts</h2>
+                <div id="drop-zone" class="border-2 border-dashed border-gray-600 hover:border-emerald-500 rounded-xl p-6 flex flex-col items-center justify-center cursor-pointer transition">
+                    <p class="text-gray-300 font-medium">Drag &amp; drop files here, or <span class="text-emerald-400 underline">browse</span></p>
+                    <p class="text-gray-500 text-xs mt-1">PNG, JPG, HEIC or PDF. Uploaded files join the waiting scans above.</p>
+                    <input type="file" id="file-input" class="hidden" accept="image/*,.pdf" multiple>
+                </div>
+                <div id="upload-status" class="mt-3 text-sm hidden"></div>
+            </section>
+
+            <!-- Snapshots -->
+            <section class="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-3">
+                <div class="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-200">Snapshots</h2>
+                        <p class="text-sm text-gray-400 mt-0.5">A saved copy of all records (database + CSV) that can be restored later.</p>
+                    </div>
+                    <div class="flex gap-2">
+                        <input id="snapshot-name-input" type="text" placeholder="Snapshot name (optional)" aria-label="Snapshot name"
+                               class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm w-56 focus:outline-none focus:border-emerald-500">
+                        <button onclick="saveSnapshot()" class="bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap">Save snapshot</button>
+                    </div>
+                </div>
+                <div id="snapshot-list" class="text-sm text-gray-400 max-h-56 overflow-y-auto">Loading snapshots...</div>
+                <div class="pt-3 border-t border-gray-700 flex flex-col sm:flex-row justify-between sm:items-center gap-2">
+                    <p class="text-sm text-gray-400">Delete every stored record. Scans on disk are not touched.</p>
+                    <button onclick="confirmClearDatabase()" class="border border-red-500/60 text-red-300 hover:bg-red-600 hover:text-white px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap">Clear all records</button>
+                </div>
+            </section>
+        </main>
+    </div>
 
     <script src="/static/js/dashboard.js"></script>
     <script>
-        // Populate the pending scans dropdown menu
-        async function loadPendingDropdown() {
-            const dropdown = document.getElementById('debug-filename');
+        const esc = (value) => String(value ?? '').replace(/[&<>"']/g,
+            ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+
+        // ─── Waiting scans ────────────────────────────────────────
+        async function loadPendingCount() {
+            const el = document.getElementById('pending-count');
             try {
-                const response = await fetch('/api/pending-files');
-                const data = await response.json();
-                dropdown.innerHTML = '';
-                if (!data.files || data.files.length === 0) {
-                    dropdown.innerHTML = '<option value="">No files in pending_scans</option>';
+                const data = await (await fetch('/api/pending-files')).json();
+                el.textContent = (data.files || []).length;
+            } catch (err) { el.textContent = '?'; }
+        }
+
+        // ─── Needs review ─────────────────────────────────────────
+        async function loadNeedsReview() {
+            const body = document.getElementById('review-body');
+            const badge = document.getElementById('review-count');
+            try {
+                const data = await (await fetch('/api/needs-review')).json();
+                const items = data.items || [];
+                badge.textContent = items.length;
+                badge.classList.toggle('hidden', items.length === 0);
+                if (!items.length) {
+                    body.innerHTML = '<tr><td colspan="5" class="py-4 px-3 text-gray-500">Nothing needs review.</td></tr>';
                     return;
                 }
-                data.files.forEach(file => {
-                    const opt = document.createElement('option');
-                    opt.value = file;
-                    opt.textContent = file;
-                    dropdown.appendChild(opt);
-                });
+                body.innerHTML = items.map(item => {
+                    const when = item.flagged_at ? item.flagged_at.replace('T', ' ').slice(0, 16)
+                                                 : new Date(item.modified * 1000).toLocaleDateString();
+                    const reason = item.reason
+                        ? `<span class="text-amber-200">${esc(item.reason)}</span>`
+                        : '<span class="text-gray-500">Set aside before reasons were recorded</span>';
+                    return `
+                        <tr class="hover:bg-gray-700/30 align-top">
+                            <td class="py-2 px-3 font-mono text-xs whitespace-nowrap">
+                                <a class="text-blue-400 hover:underline" target="_blank"
+                                   href="/api/needs-review-image/${encodeURIComponent(item.filename)}">${esc(item.filename)}</a>
+                            </td>
+                            <td class="py-2 px-3">${reason}</td>
+                            <td class="py-2 px-3 uppercase text-xs text-gray-400">${esc(item.receipt_type || '')}</td>
+                            <td class="py-2 px-3 text-xs text-gray-400 whitespace-nowrap">${esc(when)}</td>
+                            <td class="py-2 px-3 text-right whitespace-nowrap">
+                                <button data-requeue="${esc(item.filename)}" class="text-xs text-gray-300 border border-gray-600 hover:bg-gray-700 px-2 py-1 rounded">Send back to queue</button>
+                            </td>
+                        </tr>`;
+                }).join('');
             } catch (err) {
-                dropdown.innerHTML = '<option value="">Failed to load files</option>';
+                body.innerHTML = '<tr><td colspan="5" class="py-4 px-3 text-red-400">Could not load the review list.</td></tr>';
             }
         }
 
-        // FETCH & DISPLAY DATABASE RECORDS
+        document.getElementById('review-body').addEventListener('click', async (event) => {
+            const button = event.target.closest('button[data-requeue]');
+            if (!button) return;
+            button.disabled = true;
+            const res = await fetch(`/api/needs-review/${encodeURIComponent(button.dataset.requeue)}/requeue`, { method: 'POST' });
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                alert(data.detail || 'Could not send the file back to the queue.');
+            }
+            await Promise.all([loadNeedsReview(), loadPendingCount()]);
+        });
+
+        // ─── Records ──────────────────────────────────────────────
+        const tbody = document.getElementById('records-body');
+        const searchInput = document.getElementById('search-input');
+        const sortSelect = document.getElementById('sort-select');
+        let monthlyTotals = {}; // { "YYYY-MM": { "Sender": total } }
+
+        async function loadMonthlyTotals() {
+            try {
+                monthlyTotals = await (await fetch('/api/sender-monthly-totals')).json();
+            } catch (e) { monthlyTotals = {}; }
+        }
+
+        function getMonthlyTotal(senderName, dateString) {
+            if (!dateString || dateString.length < 7) return null;
+            const month = dateString.substring(0, 7);
+            return (monthlyTotals[month] && monthlyTotals[month][senderName] != null)
+                ? monthlyTotals[month][senderName] : null;
+        }
+
+        const byMonthlyTotalDesc = (a, b) =>
+            (getMonthlyTotal(b.sender_name, b.date_string) ?? 0) - (getMonthlyTotal(a.sender_name, a.date_string) ?? 0);
+
+        async function loadDeposits() {
+            const sort = sortSelect.value;
+            try {
+                const res = await fetch(`/api/deposits?search=${encodeURIComponent(searchInput.value)}&sort=${encodeURIComponent(sort)}`);
+                let rows = (await res.json()).deposits || [];
+                if (sort === 'flag-view') rows = rows.sort(byMonthlyTotalDesc);
+                renderRows(rows, sort === 'flag-view');
+            } catch (err) {
+                tbody.innerHTML = '<tr><td colspan="9" class="text-center py-6 text-red-400">Could not load records.</td></tr>';
+            }
+        }
+
+        // Records table calls this after a batch; totals first so new rows get theirs.
         async function loadDatabaseRecords() {
-            const searchQuery = document.getElementById('search-client').value.trim();
-            const tbody = document.getElementById('db-table-body');
+            await loadMonthlyTotals();
+            await loadDeposits();
+        }
 
-            try {
-                const response = await fetch(`/api/deposits?search=${encodeURIComponent(searchQuery)}`);
-                const data = await response.json();
+        function renderRows(rows, flagViewMode = false) {
+            if (!rows.length) {
+                const msg = flagViewMode ? 'No flagged senders.' : 'No records yet.';
+                tbody.innerHTML = `<tr><td colspan="9" class="text-center py-6 text-gray-500">${msg}</td></tr>`;
+                return;
+            }
+            // Consecutive rows of one sender in one month share a merged "Monthly total" cell.
+            const htmlParts = [];
+            for (const group of buildGroups(rows)) {
+                group.rows.forEach((r, idx) => {
+                    let rowClass = 'border-t border-gray-700/60 hover:bg-gray-700/30';
+                    if (r.is_flagged)  rowClass += ' row-flagged';
+                    if (r.is_canceled) rowClass += ' row-canceled';
 
-                tbody.innerHTML = '';
-                if (!data.deposits || data.deposits.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-xs text-gray-500 italic">No transaction records found.</td></tr>';
-                    return;
-                }
+                    const mergedCell = idx === 0
+                        ? `<td class="monthly-merged py-2 px-3 font-mono font-semibold ${group.monthlyTotal > 3000 ? 'text-red-400' : 'text-gray-300'}"
+                               rowspan="${group.rows.length}">$${group.monthlyTotal.toFixed(2)}</td>`
+                        : '';
 
-                data.deposits.forEach(row => {
-                    const tr = document.createElement('tr');
-                    tr.className = 'hover:bg-gray-700/30 transition';
-
-                    tr.innerHTML = `
-                        <td class="py-2 px-3 text-gray-400 font-mono text-xs">${row.date_string || 'N/A'}</td>
-                        <td class="py-2 px-3 text-gray-400 font-mono text-xs uppercase">${row.receipt_type || 'N/A'}</td>
-                        <td class="py-2 px-3 text-amber-300 font-mono text-xs">${row.sequence_number || 'N/A'}</td>
-                        <td class="py-2 px-3 font-sans font-medium text-gray-200">${row.sender_name || 'N/A'}</td>
-                        <td class="py-2 px-3 text-right font-bold text-emerald-400">$${parseFloat(row.amount || 0).toFixed(2)}</td>
-                        <td class="py-2 px-3 font-sans text-gray-300">${row.recipient_name || 'N/A'}</td>
-                    `;
-                    tbody.appendChild(tr);
+                    htmlParts.push(`
+                        <tr class="${rowClass}">
+                            <td class="py-2 px-3 text-gray-400 text-xs whitespace-nowrap">${esc(r.date_string)}</td>
+                            <td class="py-2 px-3 uppercase text-xs text-gray-500">${esc(r.receipt_type)}</td>
+                            <td class="py-2 px-3 text-xs font-mono">${esc(r.sequence_number)}</td>
+                            <td class="py-2 px-3 font-medium">${esc(r.sender_name)}</td>
+                            <td class="py-2 px-3 text-right font-mono text-emerald-400 cursor-pointer" title="Click to edit"
+                                onclick="startEditAmount(this, ${r.id}, ${Number(r.amount) || 0})">$${Number(r.amount || 0).toFixed(2)}</td>
+                            ${mergedCell}
+                            <td class="py-2 px-3 text-gray-300">${esc(r.recipient_name)}</td>
+                            <td class="py-2 px-3 space-x-2 text-xs whitespace-nowrap">
+                                ${r.is_flagged  ? '<span class="text-red-300">Over $3,000</span>' : ''}
+                                ${r.is_canceled ? '<span class="text-gray-300">Canceled</span>' : ''}
+                            </td>
+                            <td class="py-2 px-3">
+                                ${r.image_filename
+                                    ? `<a class="text-blue-400 hover:underline text-xs" target="_blank"
+                                          href="/api/receipt-image/${encodeURIComponent(r.image_filename)}">View</a>`
+                                    : '—'}
+                            </td>
+                        </tr>`);
                 });
-            } catch (err) {
-                tbody.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-xs text-red-400">Error loading database records.</td></tr>';
+            }
+            tbody.innerHTML = htmlParts.join('');
+        }
+
+        function buildGroups(rows) {
+            const groups = [];
+            let current = null;
+            for (const r of rows) {
+                const month = (r.date_string || '').substring(0, 7);
+                const key = `${r.sender_name}||${month}`;
+                if (!current || current.key !== key) {
+                    current = { key, monthlyTotal: getMonthlyTotal(r.sender_name, r.date_string) ?? 0, rows: [] };
+                    groups.push(current);
+                }
+                current.rows.push(r);
+            }
+            return groups;
+        }
+
+        // ─── Print flagged ────────────────────────────────────────
+        async function printFlagged() {
+            let flaggedRows = [];
+            try {
+                await loadMonthlyTotals();
+                const data = await (await fetch('/api/deposits?sort=flag-view')).json();
+                flaggedRows = (data.deposits || []).sort(byMonthlyTotalDesc);
+            } catch (e) {
+                alert('Could not load the flagged records for printing.');
+                return;
+            }
+            if (!flaggedRows.length) {
+                alert('No flagged senders to print.');
+                return;
+            }
+            document.getElementById('print-meta').textContent =
+                `Generated: ${new Date().toLocaleString()}  ·  ${flaggedRows.length} transaction(s) across flagged senders`;
+
+            const parts = [];
+            for (const group of buildGroups(flaggedRows)) {
+                group.rows.forEach((r, idx) => {
+                    const mergedCell = idx === 0
+                        ? `<td class="merged-total-cell col-monthly" rowspan="${group.rows.length}">$${group.monthlyTotal.toFixed(2)}</td>`
+                        : '';
+                    parts.push(`
+                        <tr>
+                            <td class="col-date">${esc(r.date_string)}</td>
+                            <td class="col-seq">${esc(r.sequence_number)}</td>
+                            <td class="col-sender">${esc(r.sender_name)}</td>
+                            <td class="col-recip">${esc(r.recipient_name)}</td>
+                            <td class="col-amount" style="text-align:right">$${Number(r.amount || 0).toFixed(2)}</td>
+                            ${mergedCell}
+                        </tr>`);
+                });
+            }
+            document.getElementById('print-body').innerHTML = parts.join('');
+            window.print();
+        }
+
+        // ─── Inline amount editor ─────────────────────────────────
+        function startEditAmount(cell, depositId, currentAmount) {
+            if (cell.querySelector('input')) return;
+            cell.innerHTML = `
+                <input class="edit-amount-input" type="number" step="0.01" value="${currentAmount}"
+                       onblur="commitAmount(this, ${depositId}, ${currentAmount})"
+                       onkeydown="if(event.key==='Enter') this.blur(); if(event.key==='Escape') { this.dataset.cancel='1'; this.blur(); }">`;
+            cell.querySelector('input').focus();
+        }
+
+        async function commitAmount(input, depositId, originalAmount) {
+            const newVal = parseFloat(input.value);
+            const cell = input.closest('td');
+            if (input.dataset.cancel || isNaN(newVal) || newVal < 0 || newVal === originalAmount) {
+                cell.textContent = `$${originalAmount.toFixed(2)}`;
+                return;
+            }
+            cell.innerHTML = '<span class="text-gray-400 text-xs">Saving...</span>';
+            try {
+                const res = await fetch(`/api/deposit/${depositId}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ amount: newVal })
+                });
+                if (!res.ok) throw new Error();
+                await loadDatabaseRecords();
+            } catch (e) {
+                cell.innerHTML = '<span class="text-red-400 text-xs">Not saved</span>';
+                setTimeout(loadDeposits, 1500);
             }
         }
 
-        // Named CSV export
+        async function recomputeFlags() {
+            if (!confirm('Clear all current flags and recompute them?\n\nEvery sender\'s monthly total will be checked again against the $3,000 limit.')) return;
+            const btn = document.getElementById('recompute-btn');
+            btn.disabled = true; btn.textContent = 'Recomputing...';
+            try {
+                await fetch('/api/recompute-flags', { method: 'POST' });
+                await loadDatabaseRecords();
+                btn.textContent = 'Done';
+            } catch (e) { btn.textContent = 'Failed'; }
+            setTimeout(() => { btn.textContent = 'Recompute flags'; btn.disabled = false; }, 2000);
+        }
+
         function exportCSV() {
-            const name = document.getElementById('export-filename').value.trim() || 'receipts_export';
+            const name = `receipts_${new Date().toISOString().slice(0, 10)}`;
             window.location.href = `/api/export-csv?filename=${encodeURIComponent(name)}`;
         }
 
-        // Save matched CSV + DB snapshot
+        // ─── Snapshots ────────────────────────────────────────────
         async function saveSnapshot() {
-            const name = document.getElementById('export-filename').value.trim();
+            const name = document.getElementById('snapshot-name-input').value.trim();
             const res = await fetch(`/api/save-snapshot?filename=${encodeURIComponent(name)}`, { method: 'POST' });
             const data = await res.json();
             if (data.status === 'success') {
-                alert(`Snapshot saved as:\n📄 ${data.csv}\n🗄️  ${data.db}`);
+                document.getElementById('snapshot-name-input').value = '';
+                loadSnapshots();
             } else {
                 alert('Snapshot failed: ' + JSON.stringify(data));
             }
         }
 
-        // Wipe table records on user confirmation
-        async function confirmClearDatabase() {
-            if (confirm("Are you sure you want to clear all stored receipt records from receipts.db?")) {
-                await fetch('/api/clear-database', { method: 'POST' });
-                loadDatabaseRecords();
-            }
+        async function restoreSnapshot(name) {
+            if (!confirm(`Restore snapshot "${name}"?\n\nThe current receipts.db will be backed up as receipts.db.bak.`)) return;
+            const res = await fetch(`/api/restore-snapshot/${encodeURIComponent(name)}`, { method: 'POST' });
+            const data = await res.json();
+            alert(data.message || JSON.stringify(data));
+            await loadDatabaseRecords();
         }
 
-        // Diagnostic Inspection Trigger
-        document.getElementById('btn-inspect').addEventListener('click', async () => {
-            const filename = document.getElementById('debug-filename').value;
-            const receiptTypeSelect = document.getElementById('receipt-type-select');
-            const receiptType = receiptTypeSelect ? receiptTypeSelect.value : 'ria';
-            const drawer = document.getElementById('inspection-drawer');
-            const rawOutput = document.getElementById('raw-ai-output');
-            const jsonOutput = document.getElementById('parsed-json-output');
-
-            if (!filename) {
-                alert('Please select a valid image from the dropdown.');
-                return;
-            }
-
-            drawer.classList.remove('hidden');
-            rawOutput.textContent = `Querying Qwen2.5-VL (${receiptType} mode)...`;
-            jsonOutput.textContent = 'Parsing response...';
-
+        async function loadSnapshots() {
+            const container = document.getElementById('snapshot-list');
             try {
-                const response = await fetch(`/api/debug-inspect/${encodeURIComponent(filename)}?receipt_type=${encodeURIComponent(receiptType)}`, { method: 'POST' });
-                const data = await response.json();
+                const data = await (await fetch('/api/list-snapshots')).json();
+                if (!data.snapshots.length) { container.innerHTML = '<span class="text-gray-500">No snapshots saved yet.</span>'; return; }
+                container.innerHTML = data.snapshots.map(s => `
+                    <div class="flex items-center justify-between py-1.5 border-b border-gray-700/60">
+                        <span class="font-mono text-gray-300 text-xs">${esc(s.name)}</span>
+                        <div class="flex gap-4">
+                            ${s.has_csv ? `<a href="/api/download-snapshot-csv/${encodeURIComponent(s.name)}" class="text-emerald-400 hover:underline text-xs">Download CSV</a>` : ''}
+                            ${s.has_db  ? `<button data-restore="${esc(s.name)}" class="text-amber-400 hover:underline text-xs">Restore</button>` : ''}
+                        </div>
+                    </div>`).join('');
+            } catch (e) { container.innerHTML = '<span class="text-red-400">Could not load snapshots.</span>'; }
+        }
 
-                if (data.status === 'success') {
-                    rawOutput.textContent = data.raw_ai_response;
-                    jsonOutput.textContent = JSON.stringify(data.parsed_json, null, 2);
-                } else {
-                    rawOutput.textContent = 'Inspection Failed';
-                    jsonOutput.textContent = JSON.stringify(data, null, 2);
-                }
-            } catch (err) {
-                rawOutput.textContent = 'Network / Endpoint Error';
-                jsonOutput.textContent = err.toString();
-            }
+        document.getElementById('snapshot-list').addEventListener('click', (event) => {
+            const button = event.target.closest('button[data-restore]');
+            if (button) restoreSnapshot(button.dataset.restore);
         });
 
-        // Initialize elements on load
-        document.addEventListener('DOMContentLoaded', () => {
-            loadPendingDropdown();
-            loadDatabaseRecords();
+        async function confirmClearDatabase() {
+            if (!confirm('Delete every stored record from receipts.db?\n\nThis cannot be undone unless you have saved a snapshot.')) return;
+            await fetch('/api/clear-database', { method: 'POST' });
+            await loadDatabaseRecords();
+        }
+
+        // ─── Wiring ───────────────────────────────────────────────
+        let debounceTimer;
+        searchInput.addEventListener('input', () => {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(loadDeposits, 250);
         });
+        sortSelect.addEventListener('change', loadDeposits);
+
+        loadPendingCount();
+        loadNeedsReview();
+        loadDatabaseRecords();
+        loadSnapshots();
     </script>
 </body>
 </html>

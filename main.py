@@ -5,11 +5,12 @@ import csv
 import glob
 import shutil
 import requests
+from datetime import datetime
 
 from PIL import Image
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request, UploadFile, File
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -23,7 +24,10 @@ from extractor import (
     OLLAMA_URL,
     REQUEST_TIMEOUT,
     ARCHIVE_DIR,
+    NEEDS_REVIEW_DIR,
     VALID_EXTENSIONS,
+    load_review_log,
+    save_review_log,
 )
 
 app = FastAPI(title="Receipt Organizer Dashboard")
@@ -43,21 +47,13 @@ def render_dashboard(request: Request):
     return templates.TemplateResponse(
         request=request, 
         name="index.html", 
-        context={"pending_count": 0, "report_data": []}
-    )
-
-@app.get("/database", response_class=HTMLResponse)
-def render_full_database_view(request: Request):
-    """
-    Standalone full-page database viewer. Open this in a new tab/window
-    (e.g. window.open('/database', '_blank')) instead of squeezing the
-    records table into the main dashboard panel.
-    """
-    return templates.TemplateResponse(
-        request=request,
-        name="database.html",
         context={}
     )
+
+@app.get("/database")
+def redirect_old_database_view():
+    """The full records table now lives on the dashboard itself; keep old links working."""
+    return RedirectResponse("/")
 
 @app.get("/api/analytics")
 def get_analytics_api():
@@ -176,6 +172,51 @@ def get_receipt_image(filename: str):
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Image not found in archive.")
     return FileResponse(file_path)
+
+@app.get("/api/needs-review")
+def list_needs_review():
+    """Receipts the pipeline set aside instead of storing, newest first, with the recorded reason."""
+    if not os.path.isdir(NEEDS_REVIEW_DIR):
+        return {"items": []}
+    log = load_review_log()
+    items = []
+    for name in os.listdir(NEEDS_REVIEW_DIR):
+        if not name.lower().endswith(VALID_EXTENSIONS):
+            continue
+        entry = log.get(name, {})
+        items.append({
+            "filename": name,
+            "reason": entry.get("reason"),
+            "receipt_type": entry.get("receipt_type"),
+            "flagged_at": entry.get("flagged_at"),
+            "modified": os.path.getmtime(os.path.join(NEEDS_REVIEW_DIR, name)),
+        })
+    # Moving a file keeps its old modified time, so prefer when it was set aside.
+    items.sort(key=lambda item: item["flagged_at"] or datetime.fromtimestamp(item["modified"]).isoformat(), reverse=True)
+    return {"items": items}
+
+@app.get("/api/needs-review-image/{filename}")
+def get_needs_review_image(filename: str):
+    file_path = os.path.join(NEEDS_REVIEW_DIR, os.path.basename(filename))
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="File not found in needs_review.")
+    return FileResponse(file_path)
+
+@app.post("/api/needs-review/{filename}/requeue")
+def requeue_needs_review(filename: str):
+    """Sends a set-aside receipt back to pending_scans so the next batch tries it again."""
+    name = os.path.basename(filename)
+    source = os.path.join(NEEDS_REVIEW_DIR, name)
+    if not os.path.isfile(source):
+        raise HTTPException(status_code=404, detail="File not found in needs_review.")
+    target = os.path.join(UPLOAD_DIR, name)
+    if os.path.exists(target):
+        raise HTTPException(status_code=409, detail="A file with this name is already waiting in pending_scans.")
+    shutil.move(source, target)
+    log = load_review_log()
+    if log.pop(name, None) is not None:
+        save_review_log(log)
+    return {"status": "success", "filename": name}
 
 @app.post("/api/upload")
 async def upload_receipt(file: UploadFile = File(...)):

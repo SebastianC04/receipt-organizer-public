@@ -3,10 +3,6 @@ const dropZone = document.getElementById('drop-zone') as HTMLDivElement;
 const fileInput = document.getElementById('file-input') as HTMLInputElement;
 const statusDiv = document.getElementById('upload-status') as HTMLDivElement;
 
-// Changed to optional checking so missing layout blocks don't drop fatal engine crashes
-const monthlyBody = document.getElementById('monthly-table-body') as HTMLTableSectionElement | null;
-const flaggedBody = document.getElementById('flagged-table-body') as HTMLTableSectionElement | null;
-
 const processBtn = document.getElementById('process-batch-btn') as HTMLButtonElement | null;
 const statusText = document.getElementById('batch-status-text') as HTMLSpanElement | null;
 const receiptTypeSelect = document.getElementById('receipt-type-select') as HTMLSelectElement | null;
@@ -28,10 +24,11 @@ async function countPendingFiles(): Promise<number> {
 }
 
 async function refreshAfterBatch(): Promise<void> {
+    // The panels live in the page's own script (templates/index.html).
     const page = window as any;
-    if (typeof fetchAnalytics === 'function') await fetchAnalytics();
-    if (typeof page.loadDatabaseRecords === 'function') await page.loadDatabaseRecords();
-    if (typeof page.loadPendingDropdown === 'function') await page.loadPendingDropdown();
+    for (const refresh of ['loadDatabaseRecords', 'loadNeedsReview', 'loadPendingCount']) {
+        if (typeof page[refresh] === 'function') await page[refresh]();
+    }
 }
 
 if (processBtn) {
@@ -46,7 +43,7 @@ if (processBtn) {
                 setStatus("No files in pending_scans to process.");
                 return;
             }
-            setStatus(`Processing ${total} receipt(s) as '${receiptType}' with Qwen2.5...`);
+            setStatus(`Processing ${total} receipt(s) as '${receiptType}'...`);
 
             const response = await fetch(`/api/process-batch?receipt_type=${encodeURIComponent(receiptType)}`, { method: 'POST' });
             if (!response.ok) throw new Error("Batch processing failed to initialize.");
@@ -68,7 +65,7 @@ if (processBtn) {
             }
 
             await refreshAfterBatch();
-            setStatus(`Done: ${total} receipt(s) processed. Data updated (anything suspicious is in needs_review).`);
+            setStatus(`Done: ${total} receipt(s) processed. Anything suspicious is listed under Needs review.`);
         }
         catch (err) {
             setStatus("Error running batch processing.");
@@ -79,49 +76,9 @@ if (processBtn) {
     });
 }
 
-// Initialization Lifecycle 
 document.addEventListener('DOMContentLoaded', () => {
-    fetchAnalytics();
     setupDragAndDrop();
 });
-
-// Fetch metrics data from local FastAPI Server
-async function fetchAnalytics(): Promise<void> {
-    try {
-        const response = await fetch('/api/analytics');
-        if (!response.ok) throw new Error('Data fetch failed');
-        const data = await response.json();
-        
-        renderTables(data.monthly_aggregates, data.vip_clients);
-    } catch (err) {
-        console.error('Failed to sync UI metrics:', err);
-    }
-}
-
-// Write API arrays into UI DOM structures cleanly
-function renderTables(monthlyData: any[], flaggedData: any[]): void {
-    
-    // 1. Wrap monthlyBody in an if check to clear the first error
-    if (monthlyBody) {
-        monthlyBody.innerHTML = monthlyData.length ? monthlyData.map(row => `
-            <tr class="hover:bg-gray-700/30">
-                <td class="py-2.5">${row.month}</td>
-                <td class="py-2.5 text-right font-mono text-emerald-400">$${row.total.toFixed(2)}</td>
-            </tr>
-        `).join('') : '<tr><td colspan="2" class="text-center py-4 text-gray-500">No records parsed.</td></tr>';
-    }
-
-    // 2. Wrap flaggedBody in an if check to clear the second error
-    if (flaggedBody) {
-        flaggedBody.innerHTML = flaggedData.length ? flaggedData.map(row => `
-            <tr class="hover:bg-amber-950/20">
-                <td class="py-2.5 font-medium text-amber-200">${row.client_name}</td>
-                <td class="py-2.5 text-right font-mono text-amber-400">$${row.amount.toFixed(2)}</td>
-            </tr>
-        `).join('') : '<tr><td colspan="2" class="text-center py-4 text-gray-500">No high volume thresholds crossed.</td></tr>';
-    }
-}
-
 
 // Wire drag and drop framework event emitters
 function setupDragAndDrop(): void {
@@ -194,5 +151,7 @@ async function handleFiles(files: FileList) {
         });
     }
     
-    if (statusText) statusText.innerText = "Upload complete! Ready to process queue.";
+    if (statusText) statusText.innerText = "Upload complete. Ready to run the batch.";
+    const page = window as any;
+    if (typeof page.loadPendingCount === 'function') await page.loadPendingCount();
 }

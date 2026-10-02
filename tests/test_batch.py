@@ -60,5 +60,26 @@ class FailedReceiptsLeaveTheQueue(unittest.TestCase):
         self.assertTrue(in_review)
 
 
+class ReviewReasons(unittest.TestCase):
+    """Every receipt sent to needs_review gets a reason the dashboard can show."""
+
+    def setUp(self):
+        prepare_workdir()
+
+    def test_send_to_review_moves_the_file_and_records_why(self):
+        queue_receipt("odd_receipt.jpg")
+        extractor.send_to_review(os.path.join(extractor.PENDING_DIR, "odd_receipt.jpg"), "odd_receipt.jpg",
+                                 "Amount 700.0 doesn't match the receipt Total 714.0", "ria")
+        self.assertIn("odd_receipt.jpg", os.listdir(extractor.NEEDS_REVIEW_DIR))
+        entry = extractor.load_review_log()["odd_receipt.jpg"]
+        self.assertEqual(entry["reason"], "Amount 700.0 doesn't match the receipt Total 714.0")
+        self.assertEqual(entry["receipt_type"], "ria")
+
+    def test_unreadable_log_counts_as_empty(self):
+        with open(extractor.REVIEW_LOG, "w") as f:
+            f.write("not json")
+        self.assertEqual(extractor.load_review_log(), {})
+
+
 if __name__ == "__main__":
     unittest.main()

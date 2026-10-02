@@ -18,8 +18,9 @@ entirely on your machine: receipts are read by a locally-hosted vision-language 
 - **Handles duplicates and cancellations** — duplicate sequence numbers are set aside
   instead of double-logged; MaxiTransfers cancellation receipts are matched back to the
   original transaction.
-- **Dashboard + full database view** — searchable, sortable table with CSV export, plus
-  a snapshot/restore system for point-in-time backups of the database.
+- **One-page dashboard** — run a batch, see what was set aside for review and why, and
+  work with the records in a searchable, sortable table with CSV export, plus a
+  snapshot/restore system for point-in-time backups of the database.
 
 ## Setup
 
