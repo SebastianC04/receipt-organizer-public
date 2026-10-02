@@ -103,26 +103,31 @@ class ClassifierParsing(unittest.TestCase):
         self.assertEqual(self._classify('{"document_type": "  Money_Transfer "}'), "money_transfer")
 
 
+def second_look_answering(content):
+    """Runs extractor.second_look() against a fake model that answers `content`."""
+    class Resp:
+        def raise_for_status(self): pass
+        def json(self): return {"message": {"content": content}}
+    original = extractor.requests.post
+    extractor.requests.post = lambda *a, **k: Resp()
+    try:
+        return extractor.second_look("ignored")
+    finally:
+        extractor.requests.post = original
+
+
 class VoidCheckParsing(unittest.TestCase):
-    """detect_void_mark() must fail safe: anything but a clear true/false counts as marked (-> review)."""
+    """void_marked() must fail safe: anything but a clear true/false counts as marked (-> review)."""
 
     def _ask(self, content):
-        class Resp:
-            def raise_for_status(self): pass
-            def json(self): return {"message": {"content": content}}
-        original = extractor.requests.post
-        extractor.requests.post = lambda *a, **k: Resp()
-        try:
-            return extractor.detect_void_mark("ignored")
-        finally:
-            extractor.requests.post = original
+        return extractor.void_marked(second_look_answering(content))
 
     def test_clear_answers(self):
         self.assertTrue(self._ask('{"void_marked": true}'))
         self.assertFalse(self._ask('{"void_marked": false}'))
 
     def test_unparseable_or_ambiguous_counts_as_marked(self):
-        for content in ("not json", "{}", '{"void_marked": "no"}', '{"void_marked": null}', ""):
+        for content in ("not json", "{}", "[]", '{"void_marked": "no"}', '{"void_marked": null}', ""):
             self.assertTrue(self._ask(content), content)
 
 
@@ -130,18 +135,14 @@ class NameSecondRead(unittest.TestCase):
     """find_name_disagreement(): only a different *reading* counts, and a failed check is skipped, not flagged."""
 
     def _check(self, content, sender="JUAN PEREZ LOPEZ", recipient="MARIA PEREZ LOPEZ"):
-        class Resp:
-            def raise_for_status(self): pass
-            def json(self): return {"message": {"content": content}}
-        original = extractor.requests.post
-        extractor.requests.post = lambda *a, **k: Resp()
-        try:
-            return extractor.find_name_disagreement("ignored", sender, recipient)
-        finally:
-            extractor.requests.post = original
+        return extractor.find_name_disagreement(second_look_answering(content), sender, recipient)
 
     def test_same_reading_passes(self):
         self.assertIsNone(self._check('{"sender_name": "JUAN PEREZ LOPEZ", "recipient_name": "MARIA PEREZ LOPEZ"}'))
+
+    def test_the_line_below_the_name_is_not_compared(self):
+        self.assertIsNone(self._check('{"sender_name": "JUAN PEREZ LOPEZ", "recipient_name": "MARIA PEREZ LOPEZ", '
+                                      '"recipient_next_line": "CALLE OCHO", "void_marked": false}'))
 
     def test_formatting_differences_are_not_disagreements(self):
         # case, extra spaces, missing space, accent, punctuation

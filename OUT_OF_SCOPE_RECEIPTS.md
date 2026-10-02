@@ -284,3 +284,34 @@ separately is what stops the model gluing it on.
 - Regression result identical across two runs. On the real set the gain is
   small (one false flag fewer); the 5 remaining wrong names are still read
   the same way twice.
+
+## One second look instead of two (2026-10-01)
+
+Timing each model call showed about 2 s of fixed cost per call before the
+model writes anything (classifier ~3.3 s, extraction ~7.3 s, VOID check
+~2.2 s, name read ~2.7 s). The VOID check and the name read were both narrow
+questions asked after extraction, so they now share one call
+(`second_look()`), read by `void_marked()` and `find_name_disagreement()`.
+
+Question order matters. With the VOID question first, the name read went back
+to gluing street lines onto names (2 misses and 1 false flag on the
+regression set). With the name lines first and the VOID question last, both
+hold up.
+
+| | Two calls | One call |
+|---|---|---|
+| Time per receipt (247 real) | ~16.4 s | ~14.7 s |
+| Real set: silent errors | 5 | 4 |
+| Real set: name-check real catches / false flags | 5 / 3 | 6 / 3 |
+| Real set: stored data correct | 97.8% | 98.2% |
+| Real set: false VOID flags | 0 | 0 |
+| Regression set: silent errors / flagged | 0 / 9 | 0 / 9 |
+
+- The merged call sends the full-size image; the VOID check used to get the
+  512px copy. On its own it still found the VOID on all 3 made-up void
+  receipts and the 1 real one, with 0 false marks on 173 real Ria receipts.
+- The extra catch and the changed false flag are 3 receipts moving, which is
+  within what two identical runs can differ by; read it as "no worse", and
+  about 10% faster.
+- Fail-safe rules are unchanged: an unreadable VOID answer or a failed call
+  sends a Ria receipt to review; an unreadable name answer is skipped.

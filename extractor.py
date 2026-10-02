@@ -245,41 +245,7 @@ def classify_document(encoded_image):
     return label if label in CLASSIFY_LABELS else "other"
 
 
-VOID_CHECK_PROMPT = (
-    "Look at this scanned receipt. Has someone marked it VOID? Look for the word VOID stamped, printed, "
-    "or written by hand anywhere on the page -- including large handwriting drawn across the printed text "
-    "and over the signature lines. Ordinary printed receipt text does not count.\n"
-    'Respond with JSON only: {"void_marked": true} or {"void_marked": false}'
-)
-
-
-def detect_void_mark(encoded_image):
-    """
-    A second look for a VOID mark, asked as its own question. Extraction can
-    miss a VOID handwritten across the page: on such a receipt the model's
-    extraction never mentioned VOID at all (4/4 runs), so no check on its
-    output could catch it, while this direct question found it every time
-    (22/22 correct on synthetic and real voids, refunds and normal receipts,
-    at 1024px and 512px). Unparseable answers count as marked, so they fail
-    safe into needs_review.
-    """
-    payload = {
-        "model": OLLAMA_MODEL,
-        "format": "json",
-        "messages": [{"role": "user", "content": VOID_CHECK_PROMPT, "images": [encoded_image]}],
-        "stream": False,
-        "options": {"temperature": 0.0, "num_predict": 20},
-    }
-    response = requests.post(OLLAMA_URL, json=payload, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
-    try:
-        answer = json.loads(response.json()['message']['content']).get('void_marked')
-    except Exception:
-        return True
-    return answer if isinstance(answer, bool) else True
-
-
-NAME_CHECK_PROMPT = (
+SECOND_LOOK_PROMPT = (
     "Copy three lines from this money-transfer receipt, exactly as printed.\n"
     "- sender_name: the complete line of text directly under 'SENDER / CLIENTE' (on Ria receipts, skip the "
     "'Customer No' line), or the text after 'Sender/Remitente:' on Maxi receipts.\n"
@@ -290,8 +256,52 @@ NAME_CHECK_PROMPT = (
     "Copy each whole line: every word on it, in order. These are Hispanic names, so they usually have two or "
     "three surnames -- do not shorten them. Keep each line separate: never join two printed lines into one "
     "answer.\n"
-    'Respond with JSON only: {"sender_name": "...", "recipient_name": "...", "recipient_next_line": "..."}'
+    "Then answer one more question, void_marked: has someone marked this receipt VOID? Look for the word VOID "
+    "stamped, printed, or written by hand anywhere on the page -- including large handwriting drawn across the "
+    "printed text and over the signature lines. Ordinary printed receipt text does not count.\n"
+    'Respond with JSON only: {"sender_name": "...", "recipient_name": "...", "recipient_next_line": "...", '
+    '"void_marked": true or false}'
 )
+
+
+def second_look(encoded_image):
+    """
+    One more model call after extraction, asking two narrow questions the big
+    extraction prompt gets wrong: is the receipt marked VOID, and what do the
+    two name lines say. They were separate calls at first; every call costs
+    about 2 s before the model produces anything, so they share one. The
+    order matters: with the VOID question first the name read went back to
+    gluing street lines onto names; with the names first, both hold up.
+
+    Returns the model's answer as a dict, or None if it didn't parse. Read it
+    with void_marked() and find_name_disagreement().
+    """
+    payload = {
+        "model": OLLAMA_MODEL,
+        "format": "json",
+        "messages": [{"role": "user", "content": SECOND_LOOK_PROMPT, "images": [encoded_image]}],
+        "stream": False,
+        "options": {"temperature": 0.0, "num_predict": 140},
+    }
+    response = requests.post(OLLAMA_URL, json=payload, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    try:
+        second = json.loads(response.json()['message']['content'])
+    except Exception:
+        return None
+    return second if isinstance(second, dict) else None
+
+
+def void_marked(second):
+    """
+    Did the second look see a VOID mark? Extraction can miss a VOID
+    handwritten across the page: on such a receipt its output never mentioned
+    VOID at all (4/4 runs), so no check on that output could catch it, while
+    the direct question finds it. Anything but a clear true/false counts as
+    marked, so a failed answer fails safe into needs_review.
+    """
+    answer = second.get('void_marked') if isinstance(second, dict) else None
+    return answer if isinstance(answer, bool) else True
 
 
 def _name_letters(value):
@@ -301,15 +311,15 @@ def _name_letters(value):
     return re.sub(r"[^A-Z]", "", text.upper())
 
 
-def find_name_disagreement(encoded_image, sender_name, recipient_name):
+def find_name_disagreement(second, sender_name, recipient_name):
     """
-    A second, independent read of the two names, asked as its own narrow
-    question. Where it disagrees with extraction, one of the two is a
-    misreading, so the receipt goes to review. On the 247 real labeled
-    receipts this caught 5 of the 10 wrong names that every other check let
-    through (one-letter misreadings, a street line glued onto a name), and
-    disagreed with only 2 of 452 correct names. History can't do this job: the
-    model's past readings carry the same systematic misspellings.
+    Compares the second look's reading of the two names with extraction's.
+    Where they disagree, one of the two is a misreading, so the receipt goes
+    to review. On the 247 real labeled receipts this catches about half of
+    the wrong names that every other check lets through (one-letter
+    misreadings, a street line glued onto a name) and disagrees with about 1%
+    of correct ones. History can't do this job: the model's past readings
+    carry the same systematic misspellings.
 
     The prompt also asks for the line *below* the recipient name, which is not
     compared. Having to write that line separately is what stops the second
@@ -321,19 +331,6 @@ def find_name_disagreement(encoded_image, sender_name, recipient_name):
     or an empty name is skipped rather than flagged -- unlike a missed VOID, a
     skipped second opinion isn't dangerous.
     """
-    payload = {
-        "model": OLLAMA_MODEL,
-        "format": "json",
-        "messages": [{"role": "user", "content": NAME_CHECK_PROMPT, "images": [encoded_image]}],
-        "stream": False,
-        "options": {"temperature": 0.0, "num_predict": 120},
-    }
-    response = requests.post(OLLAMA_URL, json=payload, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
-    try:
-        second = json.loads(response.json()['message']['content'])
-    except Exception:
-        return None
     if not isinstance(second, dict):
         return None
     for field, extracted in (("sender_name", sender_name), ("recipient_name", recipient_name)):
@@ -543,24 +540,26 @@ def process_image_batch_queue(receipt_type="ria"):
         problem = find_recipient_name_problem(recipient_name)
         if not problem and receipt_type == 'ria':
             problem = find_amount_problem(clean_data.get('raw_transcription', ''), amount)
-        # A VOID handwritten across a Ria receipt can be invisible to extraction.
-        # Ask about it separately -- after extraction, so the classifier ->
-        # extraction sequence stays exactly as validated. (Maxi cancellations
-        # are their own documents, not VOID marks.)
-        if not problem and receipt_type == 'ria' and not is_cancellation:
-            try:
-                if detect_void_mark(small_image):
-                    problem = "a VOID mark is visible, but extraction read it as a normal (not canceled) receipt"
-            except Exception as e:
-                problem = f"the VOID check failed ({e})"
-        # One-letter misreadings and street lines glued onto a name repeat
-        # themselves in the model's own transcription, so nothing above sees
-        # them; a second, narrow read of just the names sometimes does.
+        # Two things extraction gets wrong without leaving a trace in its own
+        # output: a VOID handwritten across a Ria receipt, and names (one-letter
+        # misreadings, a street line glued on). One extra call asks about both
+        # -- after extraction, so the classifier -> extraction sequence stays
+        # exactly as validated. (Maxi cancellations are their own documents,
+        # not VOID marks, so the VOID answer is only used for Ria.)
         if not problem:
+            needs_void_check = receipt_type == 'ria' and not is_cancellation
             try:
-                problem = find_name_disagreement(encoded_string, sender_name, recipient_name)
+                second = second_look(encoded_string)
             except Exception as e:
-                print(f"   (name check skipped for {filename}: {e})")
+                if needs_void_check:
+                    problem = f"the VOID check failed ({e})"
+                else:
+                    print(f"   (name check skipped for {filename}: {e})")
+            else:
+                if needs_void_check and void_marked(second):
+                    problem = "a VOID mark is visible, but extraction read it as a normal (not canceled) receipt"
+                else:
+                    problem = find_name_disagreement(second, sender_name, recipient_name)
         if problem:
             print(f"   ⚠️  Suspicious extraction for {filename}: {problem} -- moving to {NEEDS_REVIEW_DIR}")
             shutil.move(file_path, os.path.join(NEEDS_REVIEW_DIR, filename))
